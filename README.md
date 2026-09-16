@@ -25,6 +25,38 @@ GPL-3.0-or-later.
 
 Requires Chrome 121 or newer.
 
+### Why not the `.crx`?
+
+A signed `ublock-mv3.crx` is published too, but **Chrome will not install a CRX
+dragged onto `chrome://extensions`** — extensions from outside the Web Store are
+refused. The zip plus *Load unpacked* is the ordinary route.
+
+The CRX exists for the one thing the zip cannot do: **auto-updating**. Installed
+through enterprise policy, Chrome fetches new releases by itself.
+
+<details>
+<summary>Auto-update via policy (Windows)</summary>
+
+Run as Administrator, replacing the ID if you build with your own signing key:
+
+```
+reg add "HKLM\SOFTWARE\Policies\Google\Chrome\ExtensionSettings\lhenbhhllfnidhehplimafdahmiihlbc" ^
+  /v installation_mode /t REG_SZ /d normal_installed /f
+
+reg add "HKLM\SOFTWARE\Policies\Google\Chrome\ExtensionSettings\lhenbhhllfnidhehplimafdahmiihlbc" ^
+  /v update_url /t REG_SZ ^
+  /d "https://github.com/rebel6969/ublock-mv3/releases/latest/download/updates.xml" /f
+```
+
+Restart Chrome. It installs the extension and updates it whenever a new release
+is published — no manual step, no rebuild.
+
+To remove it, delete that registry key and restart Chrome.
+
+**Note:** policy-installed extensions cannot be removed from `chrome://extensions`
+by hand, which is the point of policy, but worth knowing before you apply it.
+</details>
+
 ### Bring your uBlock Origin settings across
 
 Dashboard → **Backup** → **Import from file**, and pick a backup exported from
