@@ -13,11 +13,9 @@ on:
   pull_request:
   release:
     types: [ published ]
+  # Run on demand from the Actions tab, e.g. to check that a change upstream in
+  # the filter lists has not broken the build.
   workflow_dispatch:
-  schedule:
-    # Filter lists change daily. A weekly build keeps the published baseline
-    # fresh, which also resets the delta reserve that in-browser updates consume.
-    - cron: '0 6 * * 1'
 
 permissions:
   contents: write
