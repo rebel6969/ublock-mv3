@@ -45,28 +45,36 @@ updates. To get a new version that way, download the new zip and reload.
 
 Policy install is the only route to automatic updates.
 
-<details>
-<summary>Auto-update via policy (Windows)</summary>
+### "This extension is not listed in the Chrome Web Store"
 
-Run as Administrator, replacing the ID if you build with your own signing key:
+If you installed the `.crx` by hand — Brave, for instance, accepts the drop where
+Chrome refuses it — you will end up with the extension **installed but disabled,
+and the enable toggle greyed out**:
 
-```
-reg add "HKLM\SOFTWARE\Policies\Google\Chrome\ExtensionSettings\lhenbhhllfnidhehplimafdahmiihlbc" ^
-  /v installation_mode /t REG_SZ /d normal_installed /f
+> ⚠ This extension is not listed in the Chrome Web Store and may have been added
+> without your knowledge.
 
-reg add "HKLM\SOFTWARE\Policies\Google\Chrome\ExtensionSettings\lhenbhhllfnidhehplimafdahmiihlbc" ^
-  /v update_url /t REG_SZ ^
-  /d "https://github.com/rebel6969/ublock-mv3/releases/latest/download/updates.xml" /f
-```
+Nothing on the extensions page can re-enable it. The browser blocks any extension
+that did not come from the Web Store, and that decision is made outside the page.
 
-Restart Chrome. It installs the extension and updates it whenever a new release
-is published — no manual step, no rebuild.
+**Fix — install it through policy instead, which also gets you auto-updates:**
 
-To remove it, delete that registry key and restart Chrome.
+1. Remove the broken copy: `chrome://extensions` / `brave://extensions` → **Remove**
+2. Right-click the file for your browser → **Merge**, and accept the admin prompt:
+   - [`install/chrome-policy.reg`](install/chrome-policy.reg)
+   - [`install/brave-policy.reg`](install/brave-policy.reg)
+3. **Fully restart** the browser (check the system tray)
 
-**Note:** policy-installed extensions cannot be removed from `chrome://extensions`
-by hand, which is the point of policy, but worth knowing before you apply it.
-</details>
+The browser installs it from the release itself and keeps it updated. You can
+still disable or remove it normally — `installation_mode` is `normal_installed`,
+not `force_installed`.
+
+To undo: merge [`install/uninstall-policy.reg`](install/uninstall-policy.reg) and
+restart.
+
+> Building with your own signing key produces a different extension ID. Replace
+> `lhenbhhllfnidhehplimafdahmiihlbc` in the `.reg` file with the ID that
+> `npm run pack:crx` prints.
 
 ### Bring your uBlock Origin settings across
 

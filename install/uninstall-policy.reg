@@ -1,0 +1,14 @@
+Windows Registry Editor Version 5.00
+
+; Remove the uBlock MV3 install/auto-update policy from both Chrome and Brave.
+;
+; The minus sign before the key path deletes that key and everything under it.
+; Only the uBlock MV3 entry is touched -- policies for other extensions, and any
+; other browser policy you have set, are left alone.
+;
+; After merging this, restart the browser. A policy-installed extension is
+; removed by the browser once its policy is gone.
+
+[-HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Google\Chrome\ExtensionSettings\lhenbhhllfnidhehplimafdahmiihlbc]
+
+[-HKEY_LOCAL_MACHINE\SOFTWARE\Policies\BraveSoftware\Brave\ExtensionSettings\lhenbhhllfnidhehplimafdahmiihlbc]

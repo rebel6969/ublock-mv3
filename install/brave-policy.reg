@@ -1,0 +1,30 @@
+Windows Registry Editor Version 5.00
+
+; uBlock MV3 - install + auto-update policy for Brave
+;
+; WHY THIS IS NEEDED
+; Brave and Chrome disable extensions that did not come from the Chrome Web
+; Store: "This extension is not listed in the Chrome Web Store and may have been
+; added without your knowledge", with the enable toggle greyed out. Nothing you
+; can click will re-enable it -- the decision is made outside the extensions page.
+;
+; Declaring the extension through policy makes the browser treat it as managed
+; and install it properly, and it then auto-updates from the update_url whenever
+; a new release is published.
+;
+; installation_mode "normal_installed" installs it but still lets you disable or
+; remove it yourself. Use "force_installed" instead only if you want it locked on.
+;
+; HOW TO USE
+;   1. Remove the broken copy first: brave://extensions -> Remove
+;   2. Right-click this file -> Merge (accept the admin prompt)
+;   3. Restart Brave completely (check the system tray)
+;
+; TO UNDO
+;   Run install/uninstall-policy.reg, or delete the ExtensionSettings key below,
+;   then restart Brave.
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\BraveSoftware\Brave\ExtensionSettings\lhenbhhllfnidhehplimafdahmiihlbc]
+"installation_mode"="normal_installed"
+"update_url"="https://github.com/rebel6969/ublock-mv3/releases/latest/download/updates.xml"
+"toolbar_pin"="force_pinned"
