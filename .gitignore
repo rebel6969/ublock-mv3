@@ -17,16 +17,8 @@ my-ublock-backup_*.txt
 # so the upstream version in use is always explicit.
 vendor/
 
-# CRX SIGNING KEY -- never commit.
-# The extension ID is derived from this key. Anyone holding it can sign a build
-# that Chrome will accept as an update to this extension.
-key.pem
-*.pem
-
-# Packaging output (published as release assets, not committed)
-*.crx
+# Packaging output (published as a release asset, not committed)
 *.zip
-updates.xml
 
 # OS / editor
 .DS_Store

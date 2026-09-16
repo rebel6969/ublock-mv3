@@ -19,14 +19,12 @@
     "prune:regex": "python3 tools/re2mem.py --prune",
     "check:regexmem": "python3 tools/re2mem.py --selftest --audit",
     "emit:baselines": "node --max-old-space-size=8192 tools/emit-baselines.mjs",
-    "vendor": "node tools/vendor-ubo.mjs",
-    "pack:crx": "node tools/pack-crx.mjs"
+    "vendor": "node tools/vendor-ubo.mjs"
   },
   "dependencies": {
     "@gorhill/ubo-core": "^0.1.30"
   },
   "devDependencies": {
-    "crx3": "^2.0.0",
     "esbuild": "^0.28.2",
     "re2": "^1.24.1"
   },

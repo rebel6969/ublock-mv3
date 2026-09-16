@@ -25,81 +25,15 @@ GPL-3.0-or-later.
 
 Requires Chrome 121 or newer.
 
-### Does it auto-update?
+### Updating the extension
 
-**Not if you install it by hand.** This catches people out, so to be explicit:
+Download the new zip from [Releases](../../releases) and load it again.
+Chrome does not auto-update extensions installed this way; that needs the
+Chrome Web Store or an enterprise policy deployment.
 
-| How you install | Works? | Auto-updates? |
-|---|---|---|
-| Unzip + **Load unpacked** | ✅ | ❌ never |
-| Drag `.crx` onto `chrome://extensions` | ❌ Chrome refuses it | — |
-| `.crx` via **enterprise policy** | ✅ | ✅ |
-
-Chrome refuses any extension not from the Web Store — its own wording is
-*"Extensions and apps cannot be added from this website… This can only be added
-from the Chrome Web Store."* Developer mode does not change that; it enables
-*Load unpacked*, which takes a **folder**, not a `.crx`.
-
-And an unpacked extension is just a folder on disk — Chrome never checks it for
-updates. To get a new version that way, download the new zip and reload.
-
-Policy install is the only route to automatic updates.
-
-### "This extension is not listed in the Chrome Web Store"
-
-If you installed the `.crx` by hand — Brave, for instance, accepts the drop where
-Chrome refuses it — you will end up with the extension **installed but disabled,
-and the enable toggle greyed out**:
-
-> ⚠ This extension is not listed in the Chrome Web Store and may have been added
-> without your knowledge.
-
-Nothing on the extensions page can re-enable it. The browser blocks any extension
-that did not come from the Web Store, and that decision is made outside the page.
-
-**Fix — install it through policy instead, which also gets you auto-updates:**
-
-1. Remove the broken copy: `chrome://extensions` / `brave://extensions` → **Remove**
-2. Right-click the file for your browser → **Merge**, and accept the admin prompt:
-   - [`install/chrome-policy.reg`](install/chrome-policy.reg)
-   - [`install/brave-policy.reg`](install/brave-policy.reg)
-3. **Fully restart** the browser (`chrome://restart` / `brave://restart`)
-
-The browser installs it from the release itself and keeps it updated. You can
-still disable or remove it normally — `installation_mode` is `normal_installed`,
-not `force_installed`.
-
-**Two policies are needed, not one.** `ExtensionSettings` controls installation;
-on its own the extension installs and updates but the browser still disables it
-with reason `GREYLIST` (256), which is Safe Browsing's list of off-store
-extensions. `ExtensionInstallAllowlist` is what exempts it from that. The `.reg`
-files set both.
-
-> **Do not also add the `.crx` by hand.** This is the step that defeats the whole
-> thing. A manually dropped CRX installs as `location: INTERNAL`, and policy
-> rules only govern *policy-installed* extensions (`EXTERNAL_POLICY_DOWNLOAD`).
-> The browser goes on greylisting your manual copy and ignores the policy
-> entirely. Remove every copy, then let the browser fetch it itself.
-
-To check the policy is actually being read, open `brave://policy` /
-`chrome://policy` — it should list `ExtensionSettings`. **Reload policies** there
-re-checks without a restart.
-
-**If it is still disabled after that**, use the force variant — the browser is
-not permitted to disable a `force_installed` extension:
-
-- [`install/chrome-policy-force.reg`](install/chrome-policy-force.reg)
-- [`install/brave-policy-force.reg`](install/brave-policy-force.reg)
-
-The trade-off is that the toggle and Remove button disappear while the policy is
-in place.
-
-To undo either: merge [`install/uninstall-policy.reg`](install/uninstall-policy.reg)
-and restart. It removes only this extension's entries.
-
-> Building with your own signing key produces a different extension ID. Replace
-> `lhenbhhllfnidhehplimafdahmiihlbc` in the `.reg` file with the ID that
-> `npm run pack:crx` prints.
+This matters less than it sounds: **filter lists update inside the extension**
+(see [Updating](#updating)), so the zip itself only changes when the
+extension's own code does.
 
 ### Bring your uBlock Origin settings across
 
