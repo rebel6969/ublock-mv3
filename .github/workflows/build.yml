@@ -62,6 +62,24 @@ jobs:
             echo "No CRX_PRIVATE_KEY secret; skipping CRX (zip is unaffected)."
           fi
 
+      - name: Determine version
+        # Chrome only auto-updates when the version increases, so it must be
+        # monotonic across CI runs. A release uses its tag; any other build uses
+        # the run number, which never repeats for this repository.
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            V="${{ github.event.release.tag_name }}"
+            V="${V#v}"
+            case "$V" in
+              *.*.*) : ;;
+              *)  V="$V.0" ;;
+            esac
+          else
+            V="1.0.${{ github.run_number }}"
+          fi
+          echo "EXT_VERSION=$V" >> "$GITHUB_ENV"
+          echo "building version $V"
+
       - name: Build
         run: npm run build:all
 

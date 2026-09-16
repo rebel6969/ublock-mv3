@@ -105,6 +105,30 @@ function copyRuntimeFiles() {
 const PACKAGE_VERSION = '1.0'; // bump by hand for real releases
 
 function buildVersion(now = new Date()) {
+    const p = v => String(v).padStart(2, '0');
+    const stamp = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ` +
+                  `${p(now.getHours())}:${p(now.getMinutes())}`;
+
+    // CI must set the version explicitly. The local counter lives in build/,
+    // which is not committed, so every CI run would otherwise restart at 1 --
+    // and Chrome only auto-updates when the version INCREASES, so a version that
+    // never moves silently breaks updates for everyone already installed.
+    const explicit = process.env.EXT_VERSION;
+    if ( explicit ) {
+        if ( /^\d+(\.\d+){0,3}$/.test(explicit) === false ) {
+            throw new Error(
+                `EXT_VERSION="${explicit}" is not a valid Chrome version ` +
+                `(1-4 dot-separated integers, each 0-65535)`
+            );
+        }
+        for ( const part of explicit.split('.') ) {
+            if ( Number(part) > 65535 ) {
+                throw new Error(`EXT_VERSION part "${part}" exceeds 65535`);
+            }
+        }
+        return { version: explicit, build: explicit.split('.').pop(), stamp };
+    }
+
     const counterPath = resolve(BUILD, 'build-number.txt');
     let n = 0;
     if ( existsSync(counterPath) ) {
@@ -114,13 +138,7 @@ function buildVersion(now = new Date()) {
     mkdirSync(BUILD, { recursive: true });
     writeFileSync(counterPath, String(n));
 
-    const p = v => String(v).padStart(2, '0');
-    return {
-        version: `${PACKAGE_VERSION}.${n}`,
-        build: n,
-        stamp: `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ` +
-               `${p(now.getHours())}:${p(now.getMinutes())}`,
-    };
+    return { version: `${PACKAGE_VERSION}.${n}`, build: n, stamp };
 }
 
 function writeManifest() {
