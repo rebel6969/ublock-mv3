@@ -1,0 +1,29 @@
+Windows Registry Editor Version 5.00
+
+; uBlock MV3 - FORCE install policy for Brave
+;
+; Use this only if brave-policy.reg leaves the extension disabled.
+;
+; "force_installed" means the browser is not permitted to disable or remove the
+; extension, which overrides the greylist disabling that blocks off-store
+; extensions. It is the strongest option and the one that always works.
+;
+; THE TRADE-OFF
+; You cannot disable or remove it from brave://extensions while this policy is
+; in place -- the toggle and Remove button are gone. To get rid of it you must
+; merge install/uninstall-policy.reg and restart. Know that before applying it.
+;
+; HOW TO USE
+;   1. Right-click this file -> Merge (accept the admin prompt)
+;   2. Restart Brave completely (brave://restart)
+;
+; TO UNDO
+;   Merge install/uninstall-policy.reg, then restart Brave.
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\BraveSoftware\Brave\ExtensionSettings\lhenbhhllfnidhehplimafdahmiihlbc]
+"installation_mode"="force_installed"
+"update_url"="https://github.com/rebel6969/ublock-mv3/releases/latest/download/updates.xml"
+"toolbar_pin"="force_pinned"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\BraveSoftware\Brave\ExtensionInstallAllowlist]
+"9000"="lhenbhhllfnidhehplimafdahmiihlbc"

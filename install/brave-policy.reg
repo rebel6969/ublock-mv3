@@ -8,23 +8,37 @@ Windows Registry Editor Version 5.00
 ; added without your knowledge", with the enable toggle greyed out. Nothing you
 ; can click will re-enable it -- the decision is made outside the extensions page.
 ;
-; Declaring the extension through policy makes the browser treat it as managed
-; and install it properly, and it then auto-updates from the update_url whenever
-; a new release is published.
+; TWO separate mechanisms are involved, and BOTH must be addressed:
+;
+;   ExtensionSettings        controls INSTALLATION. On its own it installs the
+;                            extension and keeps it updated, but the browser
+;                            still disables it with reason GREYLIST (256).
+;   ExtensionInstallAllowlist exempts the extension from blocklist/greylist
+;                            enforcement, which is what actually lifts the block.
+;
+; Applying only the first leaves the extension installed but permanently
+; disabled -- which is exactly what happens if you skip the allowlist entry.
 ;
 ; installation_mode "normal_installed" installs it but still lets you disable or
-; remove it yourself. Use "force_installed" instead only if you want it locked on.
+; remove it yourself. If the extension still will not stay enabled, use
+; brave-policy-force.reg instead, which the browser is not permitted to disable.
 ;
 ; HOW TO USE
-;   1. Remove the broken copy first: brave://extensions -> Remove
-;   2. Right-click this file -> Merge (accept the admin prompt)
-;   3. Restart Brave completely (check the system tray)
+;   1. Right-click this file -> Merge (accept the admin prompt)
+;   2. Restart Brave completely (check the system tray; brave://restart works)
+;
+; NOTE ON THE ALLOWLIST NUMBERING
+; ExtensionInstallAllowlist is a numbered list. This file writes entry "9000" so
+; it cannot collide with entries 1, 2, 3... that you or another tool may already
+; have. Merging does not remove existing entries.
 ;
 ; TO UNDO
-;   Run install/uninstall-policy.reg, or delete the ExtensionSettings key below,
-;   then restart Brave.
+;   Merge install/uninstall-policy.reg, then restart Brave.
 
 [HKEY_LOCAL_MACHINE\SOFTWARE\Policies\BraveSoftware\Brave\ExtensionSettings\lhenbhhllfnidhehplimafdahmiihlbc]
 "installation_mode"="normal_installed"
 "update_url"="https://github.com/rebel6969/ublock-mv3/releases/latest/download/updates.xml"
 "toolbar_pin"="force_pinned"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\BraveSoftware\Brave\ExtensionInstallAllowlist]
+"9000"="lhenbhhllfnidhehplimafdahmiihlbc"

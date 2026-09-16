@@ -12,3 +12,12 @@ Windows Registry Editor Version 5.00
 [-HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Google\Chrome\ExtensionSettings\lhenbhhllfnidhehplimafdahmiihlbc]
 
 [-HKEY_LOCAL_MACHINE\SOFTWARE\Policies\BraveSoftware\Brave\ExtensionSettings\lhenbhhllfnidhehplimafdahmiihlbc]
+
+; The allowlist entry is removed by name, so entries belonging to other
+; extensions are untouched. "9000" is the slot the install files write to.
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Google\Chrome\ExtensionInstallAllowlist]
+"9000"=-
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\BraveSoftware\Brave\ExtensionInstallAllowlist]
+"9000"=-

@@ -63,14 +63,29 @@ that did not come from the Web Store, and that decision is made outside the page
 2. Right-click the file for your browser → **Merge**, and accept the admin prompt:
    - [`install/chrome-policy.reg`](install/chrome-policy.reg)
    - [`install/brave-policy.reg`](install/brave-policy.reg)
-3. **Fully restart** the browser (check the system tray)
+3. **Fully restart** the browser (`chrome://restart` / `brave://restart`)
 
 The browser installs it from the release itself and keeps it updated. You can
 still disable or remove it normally — `installation_mode` is `normal_installed`,
 not `force_installed`.
 
-To undo: merge [`install/uninstall-policy.reg`](install/uninstall-policy.reg) and
-restart.
+**Two policies are needed, not one.** `ExtensionSettings` controls installation;
+on its own the extension installs and updates but the browser still disables it
+with reason `GREYLIST` (256), which is Safe Browsing's list of off-store
+extensions. `ExtensionInstallAllowlist` is what exempts it from that. The `.reg`
+files set both.
+
+**If it is still disabled after that**, use the force variant — the browser is
+not permitted to disable a `force_installed` extension:
+
+- [`install/chrome-policy-force.reg`](install/chrome-policy-force.reg)
+- [`install/brave-policy-force.reg`](install/brave-policy-force.reg)
+
+The trade-off is that the toggle and Remove button disappear while the policy is
+in place.
+
+To undo either: merge [`install/uninstall-policy.reg`](install/uninstall-policy.reg)
+and restart. It removes only this extension's entries.
 
 > Building with your own signing key produces a different extension ID. Replace
 > `lhenbhhllfnidhehplimafdahmiihlbc` in the `.reg` file with the ID that
