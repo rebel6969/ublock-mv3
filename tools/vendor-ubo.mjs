@@ -79,6 +79,21 @@ async function main() {
         .map(e => `src/web_accessible_resources/${e.name}`);
     await fetchInto(war, resolve(vendor, 'ubo-war'), 'redirect resources');
 
+    // Icons. Fetched rather than read from a sibling uBlock0.chromium folder,
+    // which only exists on the machine this project was first built on and made
+    // CI fail with "missing icons".
+    const iconDir = resolve(vendor, 'ubo-icons');
+    mkdirSync(iconDir, { recursive: true });
+    let iconBytes = 0;
+    for ( const name of [ 'icon_16.png', 'icon_32.png', 'icon_64.png', 'icon_128.png' ] ) {
+        const res = await fetch(`${RAW}/src/img/${name}`, { headers });
+        if ( res.ok === false ) { throw new Error(`HTTP ${res.status} for icon ${name}`); }
+        const buf = Buffer.from(await res.arrayBuffer());
+        writeFileSync(resolve(iconDir, name), buf);
+        iconBytes += buf.length;
+    }
+    console.log(`  icons: 4 files, ${(iconBytes / 1024).toFixed(0)} KiB`);
+
     const license = await fetchFile('LICENSE.txt');
     writeFileSync(resolve(vendor, 'ubo-resources', 'LICENSE.txt'), license);
     writeFileSync(resolve(vendor, 'UBO-VERSION.txt'),

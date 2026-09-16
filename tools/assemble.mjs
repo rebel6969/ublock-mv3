@@ -61,21 +61,27 @@ async function verifyShardAgreement() {
 
 /* ---------------------------------------------------------------------- */
 
+// Icons come from the vendored uBO fetch. A local uBlock0.chromium checkout is
+// accepted as a fallback, but must not be required: relying on it made CI fail,
+// since that folder only exists on the machine this was first built on.
 function copyIcons() {
     const outDir = resolve(DIST, 'img');
     mkdirSync(outDir, { recursive: true });
     const wanted = [ 'icon_16.png', 'icon_32.png', 'icon_64.png', 'icon_128.png' ];
+    const sources = [ resolve(ROOT, 'vendor/ubo-icons'), resolve(UBO, 'img') ];
+
     const copied = [];
     for ( const name of wanted ) {
-        const from = resolve(UBO, 'img', name);
-        if ( existsSync(from) === false ) { continue; }
+        const from = sources.map(d => resolve(d, name)).find(p => existsSync(p));
+        if ( from === undefined ) { continue; }
         copyFileSync(from, resolve(outDir, name));
         copied.push(name);
     }
     if ( copied.length !== wanted.length ) {
         throw new Error(
-            `missing icons: ${wanted.filter(w => copied.includes(w) === false).join(', ')} ` +
-            `(looked in ${resolve(UBO, 'img')})`
+            `missing icons: ${wanted.filter(w => copied.includes(w) === false).join(', ')}\n` +
+            `  looked in: ${sources.join('\n             ')}\n` +
+            `  run "npm run vendor" to fetch them`
         );
     }
     return copied;
