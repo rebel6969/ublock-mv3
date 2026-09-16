@@ -75,6 +75,16 @@ with reason `GREYLIST` (256), which is Safe Browsing's list of off-store
 extensions. `ExtensionInstallAllowlist` is what exempts it from that. The `.reg`
 files set both.
 
+> **Do not also add the `.crx` by hand.** This is the step that defeats the whole
+> thing. A manually dropped CRX installs as `location: INTERNAL`, and policy
+> rules only govern *policy-installed* extensions (`EXTERNAL_POLICY_DOWNLOAD`).
+> The browser goes on greylisting your manual copy and ignores the policy
+> entirely. Remove every copy, then let the browser fetch it itself.
+
+To check the policy is actually being read, open `brave://policy` /
+`chrome://policy` — it should list `ExtensionSettings`. **Reload policies** there
+re-checks without a restart.
+
 **If it is still disabled after that**, use the force variant — the browser is
 not permitted to disable a `force_installed` extension:
 
