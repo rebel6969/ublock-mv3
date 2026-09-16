@@ -1,0 +1,85 @@
+name: Build extension
+
+# Produces a loadable extension as a downloadable artifact, so users do not need
+# Node or a build step -- they download a zip and load it unpacked.
+#
+# Builds always use config/default.json (no personal data): the workflow never
+# sees a personal uBO backup, and tools/lib/backup.mjs falls back to defaults
+# when none is present.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  release:
+    types: [ published ]
+  workflow_dispatch:
+  schedule:
+    # Filter lists change daily. A weekly build keeps the published baseline
+    # fresh, which also resets the delta reserve that in-browser updates consume.
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install google-re2
+        # Validates regexFilter patterns against Chromium's 2KB compiled-memory
+        # budget. The npm re2 package cannot express max_mem; this binding can.
+        run: pip install google-re2
+
+      - name: Vendor uBlock Origin sources
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run vendor
+
+      - name: Build
+        run: npm run build:all
+
+      - name: Confirm the build carries no personal data
+        # tools/assemble.mjs records where the config came from. A build made
+        # from someone's uBO backup embeds their whitelist, so publishing one
+        # would leak it. Fail loudly rather than ship it.
+        run: |
+          node -e "
+            const p = require('./extension/data/build-provenance.json');
+            console.log(JSON.stringify(p, null, 2));
+            if (p.publishable !== true) {
+              console.error('refusing to publish: build used a personal config');
+              process.exit(1);
+            }
+          "
+
+      - name: Package
+        run: |
+          cd extension
+          zip -qr ../ublock-mv3.zip .
+          cd ..
+          ls -lh ublock-mv3.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ublock-mv3
+          path: ublock-mv3.zip
+          retention-days: 30
+
+      - name: Attach to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" ublock-mv3.zip --clobber

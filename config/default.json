@@ -1,0 +1,37 @@
+{
+  "_comment": [
+    "Default configuration for a public build. Contains NO personal data.",
+    "",
+    "This mirrors uBlock Origin's own default list selection. To build with your",
+    "own uBO configuration instead, export a backup from uBO (Dashboard ->",
+    "Settings -> Back up to file) and either place it next to this file as",
+    "config/my-config.json or pass UBLOCK_MV3_CONFIG=/path/to/backup.txt.",
+    "",
+    "Personal backups are git-ignored on purpose: a uBO backup contains every",
+    "site you have disabled blocking on, which is a browsing history by another",
+    "name."
+  ],
+  "version": "1.0.0",
+  "timeStamp": 0,
+  "userSettings": {
+    "advancedUserEnabled": false
+  },
+  "selectedFilterLists": [
+    "user-filters",
+    "ublock-filters",
+    "ublock-badware",
+    "ublock-privacy",
+    "ublock-unbreak",
+    "ublock-quick-fixes",
+    "easylist",
+    "easyprivacy",
+    "urlhaus-1",
+    "plowe-0"
+  ],
+  "hiddenSettings": {},
+  "whitelist": [],
+  "dynamicFilteringString": "",
+  "urlFilteringString": "",
+  "hostnameSwitchesString": "",
+  "userFilters": ""
+}

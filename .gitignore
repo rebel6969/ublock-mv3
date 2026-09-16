@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output. extension/ is ~92 MB of generated rulesets and shards; it is
+# published as a release asset by CI, not committed.
+build/
+extension/
+
+# PERSONAL CONFIGURATION -- never commit.
+# A uBlock Origin backup lists every site you have disabled blocking on, which is
+# a browsing history by another name, plus any personal filters you wrote.
+config/my-config.json
+my-ublock-backup_*.txt
+*.backup.txt
+
+# Vendored uBO sources are fetched by tools/vendor-ubo.mjs rather than committed,
+# so the upstream version in use is always explicit.
+vendor/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

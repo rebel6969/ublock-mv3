@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>uBlock MV3</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #fff; --fg: #1a1a1a; --muted: #666; --line: #ddd;
+  --accent: #7b241c; --on: #1e7b3c; --off: #999;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #202124; --fg: #e8eaed; --muted: #9aa0a6; --line: #3c4043; }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; width: 300px; background: var(--bg); color: var(--fg);
+  font: 13px/1.45 system-ui, -apple-system, Segoe UI, sans-serif;
+}
+header { padding: 12px 14px 10px; border-bottom: 1px solid var(--line); }
+#host { font-weight: 600; font-size: 14px; word-break: break-all; }
+#sub { color: var(--muted); font-size: 11px; margin-top: 2px; }
+main { padding: 12px 14px; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+button {
+  font: inherit; padding: 7px 12px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--line); background: transparent; color: var(--fg);
+}
+button:hover { border-color: var(--fg); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:disabled { opacity: .55; cursor: default; }
+#toggle { flex: 1; }
+.stats { border-top: 1px solid var(--line); padding-top: 10px; font-size: 11px; color: var(--muted); }
+.stats div { display: flex; justify-content: space-between; padding: 2px 0; }
+.stats b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+#status { font-size: 11px; min-height: 15px; margin-top: 8px; }
+#status.err { color: var(--accent); }
+footer { padding: 8px 14px 12px; display: flex; gap: 8px; }
+footer button { flex: 1; font-size: 12px; }
+.badge { font-size: 10px; padding: 2px 6px; border-radius: 10px; font-weight: 600; }
+.badge.on { background: color-mix(in srgb, var(--on) 18%, transparent); color: var(--on); }
+.badge.off { background: color-mix(in srgb, var(--off) 22%, transparent); color: var(--off); }
+</style>
+</head>
+<body>
+<header>
+  <div id="host">…</div>
+  <div id="sub">
+    <span id="state" class="badge off">…</span>
+  </div>
+</header>
+<main>
+  <div class="row">
+    <button id="toggle" class="primary" disabled>…</button>
+  </div>
+  <div class="stats">
+    <div><span>Static rulesets</span><b id="rulesets">–</b></div>
+    <div><span>Dynamic rules</span><b id="dynamic">–</b></div>
+    <div><span>Sites disabled</span><b id="wl">–</b></div>
+  </div>
+  <div id="status"></div>
+</main>
+<footer>
+  <button id="update">Update all lists</button>
+  <button id="dash">Dashboard</button>
+</footer>
+<script src="popup.js"></script>
+</body>
+</html>

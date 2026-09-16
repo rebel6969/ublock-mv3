@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>uBlock MV3 — Dashboard</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #fff; --fg: #1a1a1a; --muted: #666; --line: #ddd; --panel: #fafafa;
+  --accent: #7b241c; --on: #1e7b3c; --warn: #9a6a00;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #202124; --fg: #e8eaed; --muted: #9aa0a6; --line: #3c4043; --panel: #292a2d; }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 14px/1.5 system-ui, -apple-system, Segoe UI, sans-serif;
+}
+.wrap { max-width: 980px; margin: 0 auto; padding: 24px 20px 64px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+.lede { color: var(--muted); margin: 0 0 20px; font-size: 13px; }
+nav { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 20px; }
+nav button {
+  font: inherit; background: none; border: 0; border-bottom: 2px solid transparent;
+  padding: 8px 14px; cursor: pointer; color: var(--muted);
+}
+nav button.active { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
+section { display: none; }
+section.active { display: block; }
+button.btn {
+  font: inherit; padding: 7px 13px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--line); background: transparent; color: var(--fg);
+}
+button.btn:hover { border-color: var(--fg); }
+button.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.btn:disabled { opacity: .55; cursor: default; }
+.toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+input[type=text], input[type=url], textarea {
+  font: inherit; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--fg);
+}
+input[type=url] { flex: 1; min-width: 260px; }
+textarea { width: 100%; min-height: 340px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); }
+th { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr.off { opacity: .5; }
+.tag { font-size: 10px; padding: 2px 6px; border-radius: 10px; background: var(--panel); color: var(--muted); font-weight: 600; }
+.tag.dyn { color: var(--on); }
+.err { color: var(--accent); font-size: 12px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; }
+.card b { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+.card span { font-size: 11px; color: var(--muted); }
+.bar { height: 4px; background: var(--line); border-radius: 2px; margin-top: 8px; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--on); }
+.bar i.hot { background: var(--warn); }
+.bar i.over { background: var(--accent); }
+pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow: auto; font-size: 12px; max-height: 460px; }
+#msg { margin-left: auto; font-size: 12px; color: var(--muted); }
+#msg.err { color: var(--accent); }
+.ver {
+  font-size: 12px; font-weight: 500; color: var(--muted); font-variant-numeric: tabular-nums;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 2px 8px; vertical-align: middle; margin-left: 6px;
+}
+.hint { font-size: 12px; color: var(--muted); margin: 6px 0 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>uBlock MV3 <span id="ver" class="ver">…</span></h1>
+  <p class="lede" id="buildLede">Built from your uBlock Origin backup.</p>
+
+  <nav>
+    <button data-tab="lists" class="active">Filter lists</button>
+    <button data-tab="myfilters">My filters</button>
+    <button data-tab="backup">Backup</button>
+    <button data-tab="diag">Diagnostics</button>
+  </nav>
+
+  <section id="tab-lists" class="active">
+    <div class="cards" id="cards"></div>
+    <div class="toolbar">
+      <button class="btn primary" id="updateAll">Update all lists</button>
+      <input type="url" id="newList" placeholder="https://example.com/filters.txt">
+      <button class="btn" id="addList">Add list</button>
+      <span id="msg"></span>
+    </div>
+    <p class="hint">
+      Every list refreshes in the browser — no rebuild. “Update all lists” refetches and recompiles them.
+      Smaller lists (<b>full</b>) are replaced outright. Larger ones (<b>patched</b>) ship as a fixed baseline
+      that Chrome will not let an extension rewrite, so only the <em>differences</em> are applied: new rules are
+      added and rules dropped upstream are switched off. A rebuild is only ever needed to reset that baseline
+      once the accumulated differences fill their reserved space — the bar below turns amber well before then.
+    </p>
+    <table>
+      <thead><tr><th></th><th>List</th><th>Type</th><th class="num">Rules</th><th>Last updated</th><th></th></tr></thead>
+      <tbody id="listRows"></tbody>
+    </table>
+  </section>
+
+  <section id="tab-myfilters">
+    <div class="toolbar">
+      <button class="btn primary" id="saveFilters">Save &amp; apply</button>
+      <span id="filtersMsg"></span>
+    </div>
+    <p class="hint">One filter per line, uBlock Origin syntax. Network filters become dynamic DNR rules; cosmetic filters need a rebuild to take effect.</p>
+    <textarea id="userFilters" spellcheck="false"></textarea>
+  </section>
+
+  <section id="tab-backup">
+    <div class="toolbar">
+      <button class="btn primary" id="doExport">Export to file</button>
+      <button class="btn" id="pickImport">Import from file…</button>
+      <input type="file" id="importFile" accept=".txt,.json" hidden>
+      <span id="backupMsg"></span>
+    </div>
+    <p class="hint">
+      Exports use uBlock Origin's own backup format and filename
+      (<code>my-ublock-backup_YYYY-MM-DD_HH.MM.SS.txt</code>), so a backup taken here
+      restores into uBO and vice versa. Imports are validated in full and rejected as a
+      whole if anything is malformed.
+    </p>
+    <pre id="backupPreview">—</pre>
+  </section>
+
+  <section id="tab-diag">
+    <div class="toolbar">
+      <button class="btn primary" id="copyDiag">Copy to clipboard</button>
+      <button class="btn" id="saveDiag">Save as file</button>
+      <button class="btn" id="refreshDiag">Refresh</button>
+      <button class="btn" id="probeLimits" title="Measures Chrome's undocumented disabled-static-rule cap">Probe limits</button>
+      <span id="diagMsg"></span>
+    </div>
+    <p class="hint">Values read back from the live browser, including Chrome's own declarativeNetRequest limits.</p>
+    <pre id="diag">—</pre>
+  </section>
+</div>
+<script src="dashboard.js"></script>
+</body>
+</html>

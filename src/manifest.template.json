@@ -1,0 +1,59 @@
+{
+  "manifest_version": 3,
+  "name": "uBlock MV3",
+  "short_name": "uBlockMV3",
+  "version": "1.0.0",
+  "description": "Content blocker built from a uBlock Origin configuration, using uBO's static filtering engine compiled to declarativeNetRequest.",
+  "minimum_chrome_version": "121",
+  "icons": {
+    "16": "img/icon_16.png",
+    "32": "img/icon_32.png",
+    "64": "img/icon_64.png",
+    "128": "img/icon_128.png"
+  },
+  "permissions": [
+    "declarativeNetRequest",
+    "declarativeNetRequestFeedback",
+    "storage",
+    "unlimitedStorage",
+    "scripting",
+    "tabs",
+    "alarms"
+  ],
+  "host_permissions": [ "<all_urls>" ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "uBlock MV3",
+    "default_icon": {
+      "16": "img/icon_16.png",
+      "32": "img/icon_32.png",
+      "64": "img/icon_64.png"
+    }
+  },
+  "options_ui": {
+    "page": "dashboard.html",
+    "open_in_tab": true
+  },
+  "content_scripts": [
+    {
+      "matches": [ "http://*/*", "https://*/*" ],
+      "js": [ "content.js" ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [ "data/cosmetic/*", "scriptlets.js" ],
+      "matches": [ "<all_urls>" ]
+    }
+  ],
+  "declarative_net_request": {
+    "rule_resources": "__RULE_RESOURCES__"
+  }
+}

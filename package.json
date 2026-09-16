@@ -1,0 +1,32 @@
+{
+  "name": "ublock-mv3",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Manifest V3 content blocker for Chrome, built on uBlock Origin's static filtering engine compiled to declarativeNetRequest.",
+  "scripts": {
+    "resolve": "node tools/resolve-lists.mjs",
+    "fetch": "node tools/fetch-lists.mjs",
+    "compile": "node --max-old-space-size=8192 tools/build-rulesets.mjs",
+    "measure": "node --max-old-space-size=8192 tools/measure-split.mjs",
+    "emit": "node --max-old-space-size=8192 tools/emit-extension.mjs",
+    "emit:cosmetic": "node --max-old-space-size=8192 tools/emit-cosmetic.mjs",
+    "emit:scriptlets": "node --max-old-space-size=8192 tools/emit-scriptlets.mjs",
+    "assemble": "node tools/assemble.mjs",
+    "build:all": "npm run resolve && npm run fetch && npm run compile && npm run measure && npm run emit && npm run prune:regex && npm run emit:baselines && npm run emit:cosmetic && npm run emit:scriptlets && npm run assemble && npm run verify && npm run check:regex",
+    "verify": "node --max-old-space-size=8192 tools/verify.mjs",
+    "check:regex": "node --max-old-space-size=8192 tools/check-regex.mjs",
+    "prune:regex": "python3 tools/re2mem.py --prune",
+    "check:regexmem": "python3 tools/re2mem.py --selftest --audit",
+    "emit:baselines": "node --max-old-space-size=8192 tools/emit-baselines.mjs",
+    "vendor": "node tools/vendor-ubo.mjs"
+  },
+  "dependencies": {
+    "@gorhill/ubo-core": "^0.1.30"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "re2": "^1.24.1"
+  },
+  "license": "GPL-3.0-or-later"
+}
