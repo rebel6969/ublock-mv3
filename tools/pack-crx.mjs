@@ -88,16 +88,39 @@ async function main() {
     const key = loadOrCreateKey();
     const id = extensionIdFromKey(key.pem);
 
+    // Give the packaged copy an update_url so it is self-describing: Chrome can
+    // then find new versions on its own once installed.
+    //
+    // This is injected ONLY into the CRX, never the shipped extension/ folder.
+    // The zip is what people load unpacked, and an unpacked extension never
+    // auto-updates anyway -- so a custom update_url there would be inert at
+    // best. Keeping it out means the two artifacts do not diverge in behaviour.
+    const manifestPath = resolve(DIST, 'manifest.json');
+    const original = readFileSync(manifestPath, 'utf-8');
+    let restored = false;
+    const restore = () => {
+        if ( restored ) { return; }
+        writeFileSync(manifestPath, original);
+        restored = true;
+    };
+    process.on('exit', restore);
+    writeFileSync(manifestPath, JSON.stringify(
+        { ...manifest, update_url: UPDATE_URL }, null, 2
+    ));
+
     console.log('PACK CRX3');
     console.log('='.repeat(64));
     console.log(`  signing key: ${key.source}`);
     console.log(`  extension id: ${id}`);
     console.log(`  version: ${manifest.version}`);
 
-    await crx3([ resolve(DIST, 'manifest.json') ], {
-        keyPath: KEY_PATH,
-        crxPath: OUT_CRX,
-    });
+    try {
+        await crx3([ manifestPath ], { keyPath: KEY_PATH, crxPath: OUT_CRX });
+    } finally {
+        // The extension/ folder must be left exactly as the build produced it,
+        // whether packing succeeded or not.
+        restore();
+    }
 
     writeFileSync(OUT_XML, updateManifest(id, manifest.version));
 

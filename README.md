@@ -25,14 +25,25 @@ GPL-3.0-or-later.
 
 Requires Chrome 121 or newer.
 
-### Why not the `.crx`?
+### Does it auto-update?
 
-A signed `ublock-mv3.crx` is published too, but **Chrome will not install a CRX
-dragged onto `chrome://extensions`** — extensions from outside the Web Store are
-refused. The zip plus *Load unpacked* is the ordinary route.
+**Not if you install it by hand.** This catches people out, so to be explicit:
 
-The CRX exists for the one thing the zip cannot do: **auto-updating**. Installed
-through enterprise policy, Chrome fetches new releases by itself.
+| How you install | Works? | Auto-updates? |
+|---|---|---|
+| Unzip + **Load unpacked** | ✅ | ❌ never |
+| Drag `.crx` onto `chrome://extensions` | ❌ Chrome refuses it | — |
+| `.crx` via **enterprise policy** | ✅ | ✅ |
+
+Chrome refuses any extension not from the Web Store — its own wording is
+*"Extensions and apps cannot be added from this website… This can only be added
+from the Chrome Web Store."* Developer mode does not change that; it enables
+*Load unpacked*, which takes a **folder**, not a `.crx`.
+
+And an unpacked extension is just a folder on disk — Chrome never checks it for
+updates. To get a new version that way, download the new zip and reload.
+
+Policy install is the only route to automatic updates.
 
 <details>
 <summary>Auto-update via policy (Windows)</summary>
