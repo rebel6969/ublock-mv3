@@ -5,7 +5,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { ROOT } from './lib/backup.mjs';
 
-const SHARD_DIR = resolve(ROOT, 'extension/data/cosmetic');
+const SHARD_DIR = resolve(ROOT, 'build/scriptlet-data');
 
 function main() {
     const files = readdirSync(SHARD_DIR).filter(f => /^scriptlet-\d+\.json$/.test(f));

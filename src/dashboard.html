@@ -108,7 +108,8 @@ pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8p
       <button class="btn primary" id="saveFilters">Save &amp; apply</button>
       <span id="filtersMsg"></span>
     </div>
-    <p class="hint">One filter per line, uBlock Origin syntax. Network filters become dynamic DNR rules; cosmetic filters need a rebuild to take effect.</p>
+    <p class="hint">One filter per line, uBlock Origin syntax. Saving applies network, cosmetic and scriptlet (<code>##+js</code>) filters immediately; reload open pages to see the change.</p>
+    <p class="hint" id="userScriptsNotice" hidden></p>
     <textarea id="userFilters" spellcheck="false"></textarea>
   </section>
 

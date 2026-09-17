@@ -6,8 +6,7 @@
 // error anywhere. See tools/lib/env.mjs for why each token is present.
 export const ENV = [
     "ublock",
-    "ubol",
+    "webext",
     "chromium",
-    "mv3",
-    "user_stylesheet"
+    "native_css_has"
 ];

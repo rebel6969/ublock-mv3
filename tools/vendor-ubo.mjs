@@ -22,8 +22,11 @@ const REPO = 'gorhill/uBlock';
 const API = `https://api.github.com/repos/${REPO}/contents`;
 const RAW = `https://raw.githubusercontent.com/${REPO}/${UBO_REF}`;
 
-// Modules under js/resources/ that import from outside that directory.
-const EXTRA_JS = [ 'arglist-parser.js', 'jsonpath.js', 'urlskip.js' ];
+// Modules under js/resources/ that import from outside that directory, plus
+// contentscript-extra.js: uBO's procedural cosmetic engine (:has, :upward,
+// :style(), :remove-attr(), ...). Reimplementing it previously turned 10,547
+// :style()/:remove-*() filters into plain hides.
+const EXTRA_JS = [ 'arglist-parser.js', 'jsonpath.js', 'urlskip.js', 'contentscript-extra.js' ];
 
 const headers = { 'User-Agent': 'ublock-mv3-build' };
 if ( process.env.GITHUB_TOKEN ) {

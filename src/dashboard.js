@@ -211,10 +211,35 @@ $('addList').addEventListener('click', async () => {
 /* ---------------------------------------------------------------------- */
 /* User filters                                                            */
 
+// Scriptlet filters run through chrome.userScripts, which Chrome only allows
+// once the user turns on "Allow user scripts" for this extension.
+function showUserFiltersStatus(status) {
+    const el = $('userScriptsNotice');
+    if ( !status ) { el.hidden = true; return; }
+    const parts = [];
+    if ( status.scriptletsBlocked ) {
+        parts.push(`${status.counts.scriptlets} scriptlet filter(s) are not running: open chrome://extensions, ` +
+            'click Details on uBlock MV3 and turn on "Allow user scripts", then reopen this tab.');
+    }
+    if ( status.unsupportedScriptlets?.length ) {
+        parts.push(`Unknown scriptlet(s), not run: ${status.unsupportedScriptlets.join(', ')}.`);
+    }
+    if ( status.refusedUntrusted?.length ) {
+        parts.push(`Scriptlet(s) that require trusted filters, not run: ${status.refusedUntrusted.join(', ')}.`);
+    }
+    if ( status.exceptionLinesNotApplied ) {
+        parts.push(`${status.exceptionLinesNotApplied} exception line(s) (#@#) are not applied.`);
+    }
+    if ( status.error ) { parts.push(`Error: ${status.error}`); }
+    el.textContent = parts.join(' ');
+    el.hidden = parts.length === 0;
+}
+
 async function loadFilters() {
     try {
         const r = await send('getUserFilters');
         $('userFilters').value = r.userFilters;
+        showUserFiltersStatus(await send('getUserFiltersStatus'));
     } catch ( reason ) {
         say($('filtersMsg'), reason.message, true);
     }
@@ -224,8 +249,9 @@ $('saveFilters').addEventListener('click', async () => {
     const btn = $('saveFilters');
     btn.disabled = true;
     try {
-        await send('setUserFilters', { userFilters: $('userFilters').value });
-        say($('filtersMsg'), 'Saved and applied.');
+        const r = await send('setUserFilters', { userFilters: $('userFilters').value });
+        showUserFiltersStatus(r.user);
+        say($('filtersMsg'), 'Saved and applied. Reload open pages to see the change.');
     } catch ( reason ) {
         say($('filtersMsg'), reason.message, true);
     } finally {

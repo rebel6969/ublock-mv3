@@ -7,10 +7,10 @@
 // function's source already declares the name its callers use.
 //
 // Scriptlets must run before the page's own scripts, so they cannot wait on a
-// message round-trip to learn which ones apply. Instead the per-hostname call
-// map is baked into shard files and registered as content scripts scoped to the
-// hostnames in that shard (the approach uBO Lite uses), injected at
-// document_start.
+// message round-trip to learn which ones apply. Instead the hostname -> calls
+// table is baked into one file per world, registered once for all http(s)
+// pages and resolved in the page at document_start (uBO Lite's layout; see
+// emitWorldFile for the measured reason).
 //
 // `world` matters: MAIN-world scriptlets patch page globals and must run in the
 // page's realm; ISOLATED ones run in the content-script realm. They cannot share
@@ -18,10 +18,10 @@
 import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { ROOT } from './lib/backup.mjs';
-import { SHARD_COUNT } from './lib/shardcfg.mjs';
 
 const DIST = resolve(ROOT, 'extension');
-const COSMETIC = resolve(DIST, 'data', 'cosmetic');
+// Build-only scriptlet data written by tools/emit-cosmetic.mjs.
+const SCRIPTLET_DATA = resolve(ROOT, 'build', 'scriptlet-data');
 const OUT = resolve(DIST, 'scriptlets');
 const VENDOR = resolve(ROOT, 'vendor', 'ubo-resources');
 // uBO's redirectable resources. Some tokens used with ##+js(...) are not
@@ -114,6 +114,11 @@ function emitBundle(index, names, world, warUsed = new Map()) {
     parts.push(`// world: ${world}`);
     parts.push('(() => {');
     parts.push('"use strict";');
+    // One page can match several registrations (a hostname and its parent
+    // domain hash to different shards, and the wildcard script matches every
+    // page), and each registration injects this bundle. Initialise once; later
+    // copies must not redefine the table or the dedupe state.
+    parts.push(`if ( globalThis[${JSON.stringify(`__ubmv3_${world.toLowerCase()}`)}] !== undefined ) { return; }`);
 
     const dispatch = [];
     for ( const name of ordered ) {
@@ -143,6 +148,18 @@ function emitBundle(index, names, world, warUsed = new Map()) {
     }
     parts.push(']);');
 
+    // uBO orders injected scriptlets by priority, highest first; unset is 0.
+    const prio = dispatch
+        .map(([ name ]) => [ name, index.byName.get(name)?.priority ])
+        .filter(([ , p ]) => typeof p === 'number' && p !== 0);
+    parts.push(`const PRIO = new Map(${JSON.stringify(prio)});`);
+
+    // Hosts where `site#@#+js()` disables every scriptlet (emit-cosmetic output).
+    let noAll = [];
+    const noAllPath = resolve(SCRIPTLET_DATA, 'scriptlet-disable-all.json');
+    if ( existsSync(noAllPath) ) { noAll = JSON.parse(readFileSync(noAllPath, 'utf-8')); }
+    parts.push(`const NO_SCRIPTLETS = ${JSON.stringify(noAll)};`);
+
     // A failing scriptlet must never break the page or stop the others.
     parts.push(`
 const run = (token, args) => {
@@ -151,19 +168,67 @@ const run = (token, args) => {
     try { fn(...args); } catch { /* a broken scriptlet must not break the page */ }
     return true;
 };
+// The page hostname and each parent domain, for exception matching.
+const ladder = (() => {
+    const out = [];
+    let h = location.hostname;
+    while ( h !== '' ) {
+        out.push(h);
+        const i = h.indexOf('.');
+        if ( i === -1 ) { break; }
+        h = h.slice(i + 1);
+    }
+    return out;
+})();
+// uBO exception hosts: plain ("youtube.com" covers subdomains), entity
+// ("example.*", any TLD) or regex ("/.../").
+const excluded = xs => {
+    for ( const x of xs ) {
+        if ( typeof x !== 'string' || x === '' ) { continue; }
+        if ( x.length > 2 && x.startsWith('/') && x.endsWith('/') ) {
+            try { if ( new RegExp(x.slice(1, -1)).test(location.hostname) ) { return true; } }
+            catch { /* invalid pattern cannot match */ }
+            continue;
+        }
+        if ( x.endsWith('.*') ) {
+            const base = x.slice(0, -2);
+            // "example.*" matches example.com, example.co.uk, and their subdomains.
+            for ( const h of ladder ) {
+                if ( h.startsWith(base + '.') ) { return true; }
+            }
+            continue;
+        }
+        if ( ladder.includes(x) ) { return true; }
+    }
+    return false;
+};
+// Every call runs at most once per page, whichever file delivered it. Running a
+// scriptlet twice double-wraps fetch/XHR/DOM methods, which breaks sites.
+const done = new Set();
 const apply = calls => {
     if ( Array.isArray(calls) === false ) { return; }
-    for ( const call of calls ) {
+    if ( NO_SCRIPTLETS.length !== 0 && excluded(NO_SCRIPTLETS) ) { return; }
+    const batch = [];
+    for ( const item of calls ) {
+        const call = Array.isArray(item) ? item : item?.c;
         if ( Array.isArray(call) === false || call.length === 0 ) { continue; }
-        run(String(call[0]), call.slice(1));
+        if ( Array.isArray(item) === false && Array.isArray(item.x) && excluded(item.x) ) { continue; }
+        const key = JSON.stringify(call);
+        if ( done.has(key) ) { continue; }
+        done.add(key);
+        batch.push({ call, key, p: PRIO.get(String(call[0])) ?? 0 });
     }
+    // Same ordering as uBO: higher priority first, ties by call text.
+    batch.sort((a, b) => (b.p - a.p) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    for ( const { call } of batch ) { run(String(call[0]), call.slice(1)); }
 };
 const KEY = ${JSON.stringify(`__ubmv3_${world.toLowerCase()}`)};
 Object.defineProperty(globalThis, KEY, {
     value: { run, apply, size: TABLE.size },
     enumerable: false, configurable: true, writable: false,
 });
-// Shard files may load before or after this bundle; drain anything queued.
+// Drain calls queued by a lookup that ran before this bundle (not expected
+// with the lookup appended to the same file, kept as a safe fallback).
 const pending = globalThis[KEY + '_q'];
 if ( Array.isArray(pending) ) { for ( const c of pending ) { apply(c); } }
 `);
@@ -172,85 +237,171 @@ if ( Array.isArray(pending) ) { for ( const c of pending ) { apply(c); } }
     return { code: parts.join('\n'), count: dispatch.length, missing };
 }
 
-// Chrome match pattern hosts: labels of [a-z0-9-], optionally prefixed "*.".
-// Anything else makes registerContentScripts() reject the WHOLE call, which is
-// how all 128 registrations came to fail at once: uBO hostnames include entity
-// patterns ("imgtown.*", any TLD) and regex hostnames ("/foo\d+\.xyz$/"), and
-// 2,548 of those were scattered across every shard.
+// Chrome match pattern hosts: labels of [a-z0-9-] only.
 const VALID_MATCH_HOST = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
 
 export function classifyHost(host) {
-    if ( host.startsWith('/') && host.length > 2 ) { return 'regex'; }
-    if ( host.includes('*') ) { return 'entity'; }
+    if ( host.startsWith('/') && host.endsWith('/') && host.length > 2 ) { return 'regex'; }
+    if ( host === '*' ) { return 'generic'; }
+    if ( host.endsWith('.*') ) { return 'entity'; }
     if ( VALID_MATCH_HOST.test(host) ) { return 'plain'; }
     return 'other';
 }
 
-// Hosts that cannot be expressed as a match pattern are injected everywhere and
-// matched in the page instead. There are few enough (~2,500) that one extra file
-// per world stays small; scoping is simply moved from the browser to a hostname
-// test at document_start.
-function emitWildcardFile(world, entries) {
+// In-page lookup table encoding
+// -----------------------------
+// Chrome copies every registered content script's match patterns into every
+// renderer process. The previous layout registered 130 scripts carrying 49,615
+// hostname patterns; measured on 8 real sites (PSS), that alone cost ~147 MB of
+// renderer memory, growing with every open tab. uBO Lite registers scriptlets
+// once per world for all URLs and resolves the hostname inside the page; this
+// file adopts that layout.
+//
+// The lookup runs in every frame at document_start, so its cost is paid per
+// frame. A first version used array literals (26k hostnames, 9k calls): traced
+// at ~24 ms per world per frame, almost all V8 compile + array construction. The
+// encoding below uses only string literals, which V8 scans without building
+// per-element objects, and touches a few hundred bytes per lookup:
+//
+//   B  BUCKETS strings. A hostname lives in B[hash(host) & (BUCKETS-1)] as
+//      "\nhost\tref,ref,...", so a lookup is one indexOf in one small string.
+//      Plain hosts, entity hosts ("name.*") and generic ("*") share the table.
+//   C  call table in chunks of CHUNK entries; each chunk is one string of
+//      JSON texts joined by "\n" (JSON.stringify never emits a raw newline).
+//      Call r is chunk r >> CHUNK_BITS, entry r & (CHUNK-1). Only chunks that
+//      are actually referenced get split.
+//   X  regex hostnames as [source, refs] pairs (few; tested with RegExp).
+//
+// The lookup is a separate file from the scriptlet bundle: V8 keeps a script's
+// source alive while any function defined in it is alive, and the bundle's
+// functions live as long as the page. Kept apart, the table is collectable once
+// the lookup has run.
+const BUCKET_BITS = 11;
+const BUCKETS = 1 << BUCKET_BITS;
+const CHUNK_BITS = 6;
+const CHUNK = 1 << CHUNK_BITS;
+
+// FNV-1a over UTF-16 code units, 32-bit. Must match `hash` in the emitted code.
+export function bucketOf(host) {
+    let h = 0x811c9dc5;
+    for ( let i = 0; i < host.length; i++ ) {
+        h ^= host.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h & (BUCKETS - 1);
+}
+
+function emitLookupFile(world, table) {
     const key = `__ubmv3_${world.toLowerCase()}`;
     return `// Generated by tools/emit-scriptlets.mjs -- do not edit.
-// Hosts that cannot be expressed as a Chrome match pattern (uBO entity patterns
-// and regex hostnames). Injected on every page; matched here instead.
+// Hostname lookup: ${table.hostCount} hostnames, ${table.callCount} distinct calls.
 (() => {
 "use strict";
-const E = ${JSON.stringify(entries)};
-const h = location.hostname;
-if ( h === '' ) { return; }
-const calls = [];
-for ( let i = 0; i < E.length; i++ ) {
-    const e = E[i];
-    let hit = false;
-    if ( e.k === 'e' ) {
-        // uBO entity pattern "base.*": the label(s) before the TLD must match,
-        // for any TLD, on the host itself or any subdomain of it.
-        const base = e.h;
-        hit = h === base || h.endsWith('.' + base) ||
-              new RegExp('(^|\\\\.)' + base.replace(/[.*+?^\${}()|[\\]\\\\]/g, '\\\\$&') + '\\\\.[a-z0-9.-]+$').test(h);
-    } else {
-        try { hit = new RegExp(e.h).test(h); } catch { hit = false; }
-    }
-    if ( hit ) { calls.push(...e.c); }
-}
-if ( calls.length === 0 ) { return; }
 const api = globalThis[${JSON.stringify(key)}];
-if ( api !== undefined ) { api.apply(calls); return; }
-const qk = ${JSON.stringify(`${key}_q`)};
-(globalThis[qk] = globalThis[qk] || []).push(calls);
+if ( api === undefined ) { return; }
+const hn = location.hostname;
+if ( hn === '' ) { return; }
+const B = ${JSON.stringify(table.B)};
+const hash = s => {
+    let h = 0x811c9dc5;
+    for ( let i = 0; i < s.length; i++ ) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h & ${BUCKETS - 1};
+};
+const refs = new Set();
+const lookup = host => {
+    const bucket = B[hash(host)];
+    const needle = '\\n' + host + '\\t';
+    const at = bucket.indexOf(needle);
+    if ( at === -1 ) { return; }
+    const beg = at + needle.length;
+    let end = bucket.indexOf('\\n', beg);
+    if ( end === -1 ) { end = bucket.length; }
+    for ( const r of bucket.slice(beg, end).split(',') ) { refs.add(+r); }
+};
+// uBO hostname ladder: the hostname and every parent domain.
+const ladder = [ hn ];
+for ( let pos = hn.indexOf('.'); pos !== -1; pos = hn.indexOf('.', pos + 1) ) {
+    ladder.push(hn.slice(pos + 1));
+}
+for ( const h of ladder ) { lookup(h); }
+${table.hasGeneric ? `lookup('*');` : ''}
+${table.hasEntities ? `// Entity form "name.*": each ladder entry with trailing labels removed.
+for ( const h of ladder ) {
+    let s = h;
+    for ( let pos = s.lastIndexOf('.'); pos !== -1; pos = s.lastIndexOf('.') ) {
+        s = s.slice(0, pos);
+        lookup(s + '.*');
+    }
+}` : ''}
+${table.X.length !== 0 ? `const X = ${JSON.stringify(table.X)};
+for ( const [ src, list ] of X ) {
+    let re;
+    try { re = new RegExp(src); } catch { continue; }
+    if ( re.test(hn) === false ) { continue; }
+    for ( const r of list.split(',') ) { refs.add(+r); }
+}` : ''}
+if ( refs.size === 0 ) { return; }
+const C = ${JSON.stringify(table.C)};
+const chunks = new Map();
+const calls = [];
+for ( const r of refs ) {
+    const ci = r >>> ${CHUNK_BITS};
+    let chunk = chunks.get(ci);
+    if ( chunk === undefined ) { chunks.set(ci, chunk = C[ci].split('\\n')); }
+    try { calls.push(JSON.parse(chunk[r & ${CHUNK - 1}])); } catch { }
+}
+api.apply(calls);
 })();
 `;
 }
 
-// Shard invocation file: maps hostname -> calls, walks the hostname ladder the
-// same way the service worker does, and hands the result to the bundle.
-function emitShardFile(world, map) {
-    const key = `__ubmv3_${world.toLowerCase()}`;
-    return `// Generated by tools/emit-scriptlets.mjs -- do not edit.
-(() => {
-"use strict";
-const M = ${JSON.stringify(map)};
-let h = location.hostname;
-if ( h === '' ) { return; }
-const calls = [];
-for (;;) {
-    const hit = M[h];
-    if ( hit !== undefined ) { calls.push(...hit); }
-    const i = h.indexOf('.');
-    if ( i === -1 ) { break; }
-    h = h.slice(i + 1);
-    if ( h.indexOf('.') === -1 ) { break; }
-}
-if ( calls.length === 0 ) { return; }
-const api = globalThis[${JSON.stringify(key)}];
-if ( api !== undefined ) { api.apply(calls); return; }
-// Bundle not in yet: queue for it to drain.
-const qk = ${JSON.stringify(`${key}_q`)};
-(globalThis[qk] = globalThis[qk] || []).push(calls);
-})();
-`;
+// Build the lookup table for one world from { host: [call, ...] }.
+function buildTable(map) {
+    const callIndex = new Map();
+    const calls = [];
+    const refOf = call => {
+        const s = JSON.stringify(call);
+        if ( s.includes('\n') ) { throw new Error('JSON text contains a raw newline'); }
+        let i = callIndex.get(s);
+        if ( i === undefined ) { i = calls.length; calls.push(s); callIndex.set(s, i); }
+        return i;
+    };
+    const buckets = Array.from({ length: BUCKETS }, ( ) => []);
+    const X = [];
+    const counts = { plain: 0, entity: 0, regex: 0, generic: 0, other: 0 };
+    const seen = new Set();
+    for ( const [ host, list ] of Object.entries(map) ) {
+        const kind = classifyHost(host);
+        counts[kind] += 1;
+        if ( kind === 'other' ) { continue; }
+        if ( seen.has(host) ) { throw new Error(`duplicate hostname in scriptlet table: ${host}`); }
+        seen.add(host);
+        const refs = Array.from(new Set(list.map(refOf))).join(',');
+        if ( kind === 'regex' ) {
+            X.push([ host.slice(1, -1), refs ]);
+            continue;
+        }
+        // Delimiters must not occur inside a key or the lookup would misparse.
+        if ( /[\t\n,]/.test(host) ) { throw new Error(`hostname contains a delimiter: ${JSON.stringify(host)}`); }
+        buckets[bucketOf(host)].push(`\n${host}\t${refs}`);
+    }
+    const C = [];
+    for ( let i = 0; i < calls.length; i += CHUNK ) {
+        C.push(calls.slice(i, i + CHUNK).join('\n'));
+    }
+    return {
+        B: buckets.map(b => b.join('')),
+        C,
+        X,
+        hostCount: seen.size,
+        callCount: calls.length,
+        hasEntities: counts.entity !== 0,
+        hasGeneric: counts.generic !== 0,
+        counts,
+    };
 }
 
 async function main() {
@@ -261,7 +412,7 @@ async function main() {
         `${registry.length - invocable.length} helpers)`);
 
     // --- read the sharded corpus --------------------------------------------
-    const files = readdirSync(COSMETIC).filter(f => /^scriptlet-\d+\.json$/.test(f));
+    const files = readdirSync(SCRIPTLET_DATA).filter(f => /^scriptlet-\d+\.json$/.test(f));
     if ( files.length === 0 ) {
         throw new Error('no scriptlet shards found; run tools/emit-cosmetic.mjs first');
     }
@@ -272,6 +423,7 @@ async function main() {
     const usedTokens = new Map();      // canonical name -> occurrences
     const unknownTokens = new Map();   // token -> occurrences
     const warTokens = new Map();       // resource token -> occurrences
+    const untrusted = new Map();       // trusted-only scriptlet from untrusted list
     const warUsedByWorld = { MAIN: new Map(), ISOLATED: new Map() };
     // shard -> world -> { hostname: calls[] }
     const shardData = new Map();
@@ -279,11 +431,16 @@ async function main() {
 
     for ( const f of files ) {
         const n = Number(/(\d+)/.exec(f)[1]);
-        const shard = JSON.parse(readFileSync(resolve(COSMETIC, f), 'utf-8'));
+        const shard = JSON.parse(readFileSync(resolve(SCRIPTLET_DATA, f), 'utf-8'));
         const worlds = { MAIN: {}, ISOLATED: {} };
         for ( const [ host, list ] of Object.entries(shard) ) {
-            for ( const args of list ) {
+            for ( const item of list ) {
+                // Either a bare args array, or { v: args, x: excludeHosts }.
+                const args = Array.isArray(item) ? item : item?.v;
+                const excludes = Array.isArray(item) ? null : item?.x;
+                const fromTrusted = Array.isArray(item) === false && item?.t === 1;
                 if ( Array.isArray(args) === false || args.length === 0 ) { continue; }
+                const wrap = call => (excludes && excludes.length ? { c: call, x: excludes } : call);
                 const raw = String(args[0]);
                 let name = canonical(index, raw);
                 pairs += 1;
@@ -294,22 +451,36 @@ async function main() {
                         warUsedByWorld.MAIN.set(warToken, warFiles.get(warToken));
                         warTokens.set(warToken, (warTokens.get(warToken) ?? 0) + 1);
                         (worlds.MAIN[host] = worlds.MAIN[host] || [])
-                            .push([ warToken, ...args.slice(1) ]);
+                            .push(wrap([ warToken, ...args.slice(1) ]));
                         continue;
                     }
                     unknownTokens.set(raw, (unknownTokens.get(raw) ?? 0) + 1);
+                    continue;
+                }
+                // uBlock Origin refuses scriptlets that require trust unless the
+                // filter came from a trusted list. Without this, any third-party
+                // list could run trusted-replace-fetch-response and friends.
+                if ( index.byName.get(name).requiresTrust === true && fromTrusted === false ) {
+                    untrusted.set(name, (untrusted.get(name) ?? 0) + 1);
                     continue;
                 }
                 usedTokens.set(name, (usedTokens.get(name) ?? 0) + 1);
                 const world = index.byName.get(name).world === 'ISOLATED' ? 'ISOLATED' : 'MAIN';
                 const bucket = worlds[world];
                 // Store the canonical name so the runtime never re-resolves aliases.
-                (bucket[host] = bucket[host] || []).push([ name, ...args.slice(1) ]);
+                (bucket[host] = bucket[host] || []).push(wrap([ name, ...args.slice(1) ]));
             }
         }
         shardData.set(n, worlds);
     }
 
+    if ( untrusted.size !== 0 ) {
+        const n = [ ...untrusted.values() ].reduce((a, b) => a + b, 0);
+        console.log(`\nREFUSED ${n} trusted-only scriptlet uses from untrusted lists (uBO does the same):`);
+        for ( const [ t, c ] of [ ...untrusted ].sort((a, b) => b[1] - a[1]) ) {
+            console.log(`  ${String(c).padStart(6)}  ${t}`);
+        }
+    }
     console.log(`\ncorpus: ${pairs.toLocaleString()} (hostname, scriptlet) pairs`);
     console.log(`  resolved to ${usedTokens.size} distinct scriptlets`);
     if ( warTokens.size !== 0 ) {
@@ -338,6 +509,16 @@ async function main() {
         byWorld[w].push(name);
     }
 
+    // Merge the per-shard maps: one { host: calls[] } per world.
+    const merged = { MAIN: {}, ISOLATED: {} };
+    for ( const worlds of shardData.values() ) {
+        for ( const world of [ 'MAIN', 'ISOLATED' ] ) {
+            for ( const [ host, calls ] of Object.entries(worlds[world]) ) {
+                (merged[world][host] = merged[world][host] || []).push(...calls);
+            }
+        }
+    }
+
     const registrations = [];
     for ( const world of [ 'MAIN', 'ISOLATED' ] ) {
         const warForWorld = warUsedByWorld[world];
@@ -346,86 +527,48 @@ async function main() {
             continue;
         }
         const { code, count, missing } = emitBundle(index, byWorld[world], world, warForWorld);
-        const bundlePath = `scriptlets/bundle-${world.toLowerCase()}.js`;
-        writeFileSync(resolve(DIST, bundlePath), code);
-        console.log(`\n${world}: ${count} scriptlets -> ${bundlePath} ` +
-            `(${(code.length / 1024).toFixed(0)} KiB)`);
         if ( missing.size !== 0 ) {
-            console.log(`  MISSING DEPENDENCIES: ${[ ...missing ].join(', ')}`);
+            throw new Error(`${world}: missing scriptlet dependencies: ${[ ...missing ].join(', ')}`);
         }
-
-        let shardBytes = 0, biggest = 0, shardsUsed = 0, hostsTotal = 0;
-        const wildcard = [];
-        const classCounts = { plain: 0, entity: 0, regex: 0, other: 0 };
-
-        for ( const [ n, worlds ] of shardData ) {
-            const map = worlds[world];
-            // Split by whether the host can be a Chrome match pattern at all.
-            const plain = {};
-            for ( const [ host, calls ] of Object.entries(map) ) {
-                const kind = classifyHost(host);
-                classCounts[kind] += 1;
-                if ( kind === 'plain' ) {
-                    plain[host] = calls;
-                } else if ( kind === 'entity' ) {
-                    wildcard.push({ k: 'e', h: host.replace(/\.\*$/, ''), c: calls });
-                } else if ( kind === 'regex' ) {
-                    // uBO wraps regex hostnames in slashes.
-                    wildcard.push({ k: 'r', h: host.replace(/^\/|\/$/g, ''), c: calls });
-                }
-                // 'other' is dropped: not a match pattern and not a recognised
-                // uBO host form, so there is nothing sound to match against.
-            }
-
-            const hosts = Object.keys(plain);
-            if ( hosts.length === 0 ) { continue; }
-            const js = emitShardFile(world, plain);
-            const name = `${world.toLowerCase()}-${String(n).padStart(2, '0')}.js`;
-            writeFileSync(resolve(OUT, name), js);
-            shardBytes += js.length;
-            if ( js.length > biggest ) { biggest = js.length; }
-            shardsUsed += 1;
-            hostsTotal += hosts.length;
-
-            const matches = hosts.map(h => `*://*.${h}/*`);
-            // Assert before shipping: one bad pattern kills the whole call.
-            for ( const p of matches ) {
-                const m = /^\*:\/\/\*\.(.+)\/\*$/.exec(p);
-                if ( m === null || VALID_MATCH_HOST.test(m[1]) === false ) {
-                    throw new Error(`invalid match pattern would be registered: ${p}`);
-                }
-            }
-            registrations.push({
-                id: `ubmv3-${world.toLowerCase()}-${n}`,
-                world,
-                js: [ bundlePath, `scriptlets/${name}` ],
-                matches,
-                hosts: hosts.length,
-            });
+        const table = buildTable(merged[world]);
+        const bundleFile = `scriptlets/${world.toLowerCase()}-bundle.js`;
+        const file = `scriptlets/${world.toLowerCase()}-lookup.js`;
+        const js = emitLookupFile(world, table);
+        writeFileSync(resolve(DIST, bundleFile), code);
+        writeFileSync(resolve(DIST, file), js);
+        registrations.push({
+            id: `ubmv3-${world.toLowerCase()}`,
+            world,
+            // Order matters: Chrome injects js[] in sequence, bundle first.
+            js: [ bundleFile, file ],
+            // Every http(s) page: hostname scoping happens in the page (see
+            // emitWorldFile). Whitelist exclusions are added at registration.
+            matches: [ 'http://*/*', 'https://*/*' ],
+            hosts: table.hostCount,
+        });
+        const c = table.counts;
+        console.log(`\n${world}: ${count} scriptlets, ${table.callCount.toLocaleString()} distinct calls -> ` +
+            `${bundleFile} (${(code.length / 1024).toFixed(0)} KiB) + ${file} (${(js.length / 1024).toFixed(0)} KiB)`);
+        console.log(`  hostnames: plain=${c.plain.toLocaleString()} entity=${c.entity.toLocaleString()} ` +
+            `regex=${c.regex} generic=${c.generic} dropped=${c.other}`);
+        if ( c.other !== 0 ) {
+            console.log(`  NOTE: ${c.other} hostname(s) matched no uBO host form and were dropped`);
         }
-
-        if ( wildcard.length !== 0 ) {
-            const js = emitWildcardFile(world, wildcard);
-            const name = `${world.toLowerCase()}-wildcard.js`;
-            writeFileSync(resolve(OUT, name), js);
-            registrations.push({
-                id: `ubmv3-${world.toLowerCase()}-wildcard`,
-                world,
-                js: [ bundlePath, `scriptlets/${name}` ],
-                matches: [ '*://*/*' ],
-                hosts: wildcard.length,
-            });
-            console.log(`  wildcard: ${wildcard.length.toLocaleString()} entity/regex hosts -> ` +
-                `${name} (${(js.length / 1024).toFixed(0)} KiB, injected on all pages)`);
-        }
-
-        console.log(`  ${shardsUsed} shard files, ${hostsTotal.toLocaleString()} match-pattern hostnames, ` +
-            `${(shardBytes / 1048576).toFixed(2)} MiB total, largest ${(biggest / 1024).toFixed(0)} KiB`);
-        console.log(`  host classes: plain=${classCounts.plain.toLocaleString()} ` +
-            `entity=${classCounts.entity.toLocaleString()} regex=${classCounts.regex.toLocaleString()} ` +
-            `dropped=${classCounts.other.toLocaleString()}`);
     }
 
+    // Runtime catalog for user filters compiled in the service worker: every
+    // spelling (name and aliases) that a bundle can execute, with its world and
+    // trust requirement. A scriptlet absent from the bundles cannot run.
+    const catalog = {};
+    for ( const world of [ 'MAIN', 'ISOLATED' ] ) {
+        for ( const name of byWorld[world] ) {
+            const d = index.byName.get(name);
+            const entry = { name, world, trust: d.requiresTrust === true };
+            catalog[name] = entry;
+            for ( const a of (d.aliases ?? []) ) { catalog[a] = entry; }
+        }
+    }
+    writeFileSync(resolve(OUT, 'catalog.json'), JSON.stringify(catalog));
     writeFileSync(resolve(OUT, 'registrations.json'), JSON.stringify(registrations));
     const totalPatterns = registrations.reduce((n, r) => n + r.matches.length, 0);
     console.log(`\nregistrations: ${registrations.length} content scripts, ` +

@@ -87,8 +87,20 @@ export async function dropUnsupportedRegex(rules) {
     return { kept, dropped };
 }
 
+// replaceBand is read-modify-write on the single dynamic ruleset: it reads the
+// current rules to compute removeRuleIds, then writes. Two overlapping calls
+// (reconcile, the update alarm, a whitelist toggle) would both act on a stale
+// read and collide on rule ids. All writes therefore go through one queue.
+let bandChain = Promise.resolve();
+
 // Replace every rule in one band, leaving the other bands untouched.
-export async function replaceBand(band, rules) {
+export function replaceBand(band, rules) {
+    const run = bandChain.then(() => replaceBandNow(band, rules));
+    bandChain = run.catch(() => {});
+    return run;
+}
+
+async function replaceBandNow(band, rules) {
     const existing = await getDynamicRules();
     const removeRuleIds = existing.filter(r => inBand(r.id, band)).map(r => r.id);
 

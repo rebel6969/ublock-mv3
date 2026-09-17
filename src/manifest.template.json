@@ -18,7 +18,8 @@
     "unlimitedStorage",
     "scripting",
     "tabs",
-    "alarms"
+    "alarms",
+    "userScripts"
   ],
   "host_permissions": [ "<all_urls>" ],
   "background": {
@@ -45,12 +46,6 @@
       "run_at": "document_start",
       "all_frames": true,
       "match_about_blank": true
-    }
-  ],
-  "web_accessible_resources": [
-    {
-      "resources": [ "data/cosmetic/*", "scriptlets.js" ],
-      "matches": [ "<all_urls>" ]
     }
   ],
   "declarative_net_request": {

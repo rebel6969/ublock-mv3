@@ -9,27 +9,24 @@
 //
 // Each entry below is a deliberate capability claim about this extension.
 export const ENV = [
-    // ext_ublock -- we consume uBO filter syntax.
+    // The same tokens uBlock Origin MV2 sets on Chrome (uBlock0.chromium
+    // js/vapi-common.js, webextFlavor.soup). This extension runs uBO's own
+    // scriptlets and procedural engine in the page, like MV2, so lists must
+    // resolve to MV2's branches. Claiming `ubol`/`mv3` selected uBO Lite's
+    // branches instead (e.g. quick-fixes `!#if !env_mv3` YouTube blocks),
+    // which is a different filter set from what the user's MV2 build runs.
     'ublock',
-    // ext_ubol -- we are the MV3/declarativeNetRequest flavour, like uBO Lite.
-    'ubol',
-    // env_chromium -- target is Chrome.
+    'webext',
     'chromium',
-    // env_mv3 -- manifest v3.
-    'mv3',
-    // cap_user_stylesheet -- we inject cosmetic CSS via
-    // chrome.scripting.insertCSS({ origin: 'USER' }).
-    'user_stylesheet',
+    // Chrome supports :has() natively; MV2 adds this after CSS.supports().
+    'native_css_has',
 
-    // DELIBERATELY ABSENT:
-    //   html_filtering -- MV3 cannot rewrite response bodies. This is the same
-    //     limitation that makes `$replace=` filters unrepresentable in DNR, so
-    //     claiming it would enable filters we cannot honour. Leaving it false
-    //     also activates the `!#if !cap_html_filtering` fallback blocks that
-    //     list maintainers provide for exactly this case.
-    //   ipaddress    -- DNR has no IP-address matching condition.
-    //   firefox / safari / edge / mobile / legacy / devbuild / adguard
-    //                -- not this platform.
+    // DELIBERATELY ABSENT (differs from MV2 or not this platform):
+    //   ipaddress    -- MV2 sets it, but DNR has no IP-address matching, so
+    //     the `!#else` fallbacks list maintainers provide are the usable ones.
+    //   html_filtering -- MV2 on Chrome does not set it either.
+    //   ubol / mv3   -- uBO Lite branches, see above.
+    //   firefox / safari / mobile / devbuild / brave / adguard -- not this build.
 ];
 
 // Options object shared by every call into ubo-core, so no tool can drift.

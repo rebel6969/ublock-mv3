@@ -2,7 +2,7 @@
 // source, build the manifest from the emitted rulesets, and enforce the two
 // invariants that otherwise fail silently.
 import {
-    readFileSync, writeFileSync, mkdirSync, copyFileSync, existsSync, readdirSync, statSync,
+    readFileSync, writeFileSync, mkdirSync, copyFileSync, existsSync, readdirSync, statSync, rmSync,
 } from 'node:fs';
 import { resolve } from 'node:path';
 import { build } from 'esbuild';
@@ -88,10 +88,23 @@ function copyIcons() {
 }
 
 function copyRuntimeFiles() {
-    const files = [ 'content.js', 'popup.html', 'popup.js', 'dashboard.html', 'dashboard.js' ];
+    const files = [ 'content.js', 'generic.js', 'popup.html', 'popup.js', 'dashboard.html', 'dashboard.js' ];
     for ( const f of files ) {
         copyFileSync(resolve(SRC, f), resolve(DIST, f));
     }
+    // Runtime files earlier builds shipped that no longer exist in src/. The
+    // extension directory is not wiped between builds, so remove them here or
+    // they would linger in every unpacked copy.
+    for ( const f of [ 'vapi-shim.js' ] ) {
+        rmSync(resolve(DIST, f), { force: true });
+    }
+    // uBlock Origin's procedural cosmetic engine, unmodified.
+    const engine = resolve(ROOT, 'vendor/contentscript-extra.js');
+    if ( existsSync(engine) === false ) {
+        throw new Error('vendor/contentscript-extra.js missing -- run "npm run vendor"');
+    }
+    copyFileSync(engine, resolve(DIST, 'procedural.js'));
+    files.push('procedural.js (vendor/contentscript-extra.js)');
     return files;
 }
 
@@ -176,16 +189,20 @@ function writeManifest() {
         patchedTokens: plan.staticTokens,
     }, null, 2));
 
-    // The generic cosmetic stylesheet is injected declaratively -- no lookup and
-    // no message round-trip, so it applies before the page paints.
-    template.content_scripts[0].css = [ 'data/cosmetic/generic.css' ];
+    // generic.css is NOT declared here. A manifest stylesheet applies to every
+    // page unconditionally, but uBlock Origin skips generic hiding on whitelisted
+    // sites and on sites marked $generichide/$elemhide. The service worker
+    // registers it instead, with those sites in excludeMatches -- still injected
+    // by the browser at document_start, so no delay is added.
+    delete template.content_scripts[0].css;
 
-    // Scriptlet bundles and shard files are injected by registerContentScripts,
-    // which requires them to be listed as web-accessible.
-    template.web_accessible_resources = [ {
-        resources: [ 'data/cosmetic/*', 'scriptlets/*' ],
-        matches: [ '<all_urls>' ],
-    } ];
+    // No web_accessible_resources. Registered content scripts, executeScript
+    // files and the worker's own fetch() of packaged data do not need them;
+    // listing files there only lets any web page fetch them, which exposes the
+    // filter data and makes the extension detectable (verified in a live
+    // Chromium: scriptlets, generic filtering and procedural injection all run
+    // without it).
+    delete template.web_accessible_resources;
 
     writeFileSync(resolve(DIST, 'manifest.json'), JSON.stringify(template, null, 2));
     return { rulesets: ruleResources.length, version, stamp };

@@ -17,6 +17,9 @@ import {
     dropUnsupportedRegex, sanitizeRule,
 } from './lib/dynamic-rules.js';
 import { ruleHash } from './lib/rulehash.js';
+import {
+    applyUserFilters, userScriptsAvailable, USER_COSMETIC_KEY, USER_STATUS_KEY,
+} from './lib/user-filters.js';
 
 const STATE_KEY = 'listState';
 
@@ -318,11 +321,24 @@ async function applyWhitelist(config) {
 async function setSiteEnabled(hostname, enabled) {
     const config = await loadConfig();
     const set = new Set(config.whitelist ?? []);
-    if ( enabled ) { set.delete(hostname); } else { set.add(hostname); }
+    if ( enabled ) {
+        // Whitelisting matches parent domains too, so re-enabling a host must
+        // remove whichever entry covers it, not just an exact match.
+        set.delete(hostname);
+        for ( const h of hostnameLadder(hostname) ) { set.delete(h); }
+    } else {
+        set.add(hostname);
+    }
     config.whitelist = Array.from(set).sort();
     await saveConfig(config);
     const applied = await applyWhitelist(config);
-    return { hostname, blocking: enabled, whitelisted: set.has(hostname), applied };
+    // Network allow rules are not enough: scriptlets and generic CSS are
+    // registered content scripts whose excludeMatches carry the whitelist, so
+    // they must be re-registered for the toggle to take effect.
+    const scripts = await registerScriptletScripts();
+    // User scriptlets carry the whitelist as excludeMatches too.
+    const user = await reapplyUserFilters().catch(reason => ({ error: reason.message }));
+    return { hostname, blocking: enabled, whitelisted: set.has(hostname), applied, scripts: scripts.ok, userFilters: user };
 }
 
 /* ------------------------------------------------------------------------- */
@@ -344,37 +360,136 @@ async function loadShard(kind, n) {
     return hit;
 }
 
-async function cosmeticFor(hostname) {
-    const config = await loadConfig();
-    // A whitelisted site gets no cosmetic filtering, matching uBO.
-    if ( (config.whitelist ?? []).includes(hostname) ) {
-        return { selectors: [], procedural: [], scriptlets: [], disabled: true };
+let genericExceptedCache = null;
+async function loadGenericExcepted() {
+    if ( genericExceptedCache === null ) {
+        genericExceptedCache = await fetch(chrome.runtime.getURL('data/cosmetic/generic-excepted.json'))
+            .then(r => r.json())
+            .catch(() => []);
     }
+    return genericExceptedCache;
+}
 
+async function cosmeticFor(hostname) {
+    const [ config, hide ] = await Promise.all([ loadConfig(), loadHideExceptions() ]);
     const ladder = hostnameLadder(hostname);
-    const selectors = [];
-    const procedural = [];
-    const scriptlets = [];
 
+    // A whitelisted site gets no cosmetic filtering. uBO matches whitelist
+    // entries against the hostname AND each parent domain
+    // (µb.getNetFilteringSwitch), so "example.com" covers "www.example.com";
+    // an exact-match lookup missed every subdomain.
+    const whitelist = new Set((config.whitelist ?? []).map(w => String(w).trim().toLowerCase()));
+    if ( whitelist.has(hostname) || ladder.some(h => whitelist.has(h)) ) {
+        return { selectors: [], styles: [], procedural: [], disabled: true };
+    }
+    const selectors = [];
+    const styles = [];
+    const procedural = [];
+
+    // Scriptlets are resolved in the page by the registered lookup scripts;
+    // only the specific cosmetic shards are needed here.
     const shards = new Set(ladder.map(shardOf));
     const specific = new Map();
-    const scriptletMap = new Map();
-    await Promise.all(Array.from(shards).flatMap(n => [
-        loadShard('specific', n).then(o => specific.set(n, o)),
-        loadShard('scriptlet', n).then(o => scriptletMap.set(n, o)),
-    ]));
+    await Promise.all(Array.from(shards).map(n =>
+        loadShard('specific', n).then(o => specific.set(n, o))
+    ));
 
-    for ( const host of ladder ) {
-        const n = shardOf(host);
-        for ( const v of (specific.get(n)?.[host] ?? []) ) {
-            if ( typeof v === 'string' ) { selectors.push(v); }
-            else if ( v && v.p ) { procedural.push(v); }
+    // uBO exception hosts: plain (covers subdomains), entity "example.*", or
+    // regex "/.../". Mirrors the scriptlet bundle's logic.
+    const excluded = xs => xs.some(x => {
+        if ( typeof x !== 'string' || x === '' ) { return false; }
+        if ( x.length > 2 && x.startsWith('/') && x.endsWith('/') ) {
+            try { return new RegExp(x.slice(1, -1)).test(hostname); } catch { return false; }
         }
-        for ( const args of (scriptletMap.get(n)?.[host] ?? []) ) {
-            scriptlets.push(args);
+        if ( x.endsWith('.*') ) {
+            const base = x.slice(0, -2) + '.';
+            return ladder.some(h => h.startsWith(base));
+        }
+        return ladder.includes(x);
+    });
+
+    // $specifichide / $elemhide: no site-specific cosmetic filters here.
+    // $generichide / $elemhide: no generic ones (generic-high.css and the
+    // generic.js surveyor are excluded at registration; this covers the
+    // per-page generic selectors below, and entity/regex forms registration
+    // cannot express).
+    const noSpecific = excluded(hide.specific ?? []);
+    const noGeneric = excluded(hide.generic ?? []);
+
+    // User filters compiled at runtime from "My filters" (src/lib/user-filters.js).
+    const user = await loadUserCosmetic();
+
+    // A selector reached via both a host and its parent domain is applied once.
+    const seenSel = new Set();
+    const seenProc = new Set();
+    for ( const host of (noSpecific ? [] : ladder) ) {
+        const n = shardOf(host);
+        const items = specific.get(n)?.[host] ?? [];
+        const userItems = user.byHost?.[host] ?? [];
+        for ( const item of (userItems.length === 0 ? items : items.concat(userItems)) ) {
+            // { v, x } carries an exception list; skip it where it is excepted.
+            let v = item;
+            if ( item && typeof item === 'object' && 'v' in item ) {
+                if ( Array.isArray(item.x) && excluded(item.x) ) { continue; }
+                v = item.v;
+            }
+            if ( typeof v === 'string' ) {
+                if ( seenSel.has(v) === false ) { seenSel.add(v); selectors.push(v); }
+            } else if ( v && typeof v.css === 'string' ) {
+                // selector:style(decl) expressible as plain CSS
+                const k = `${v.css}\n{${v.style}}`;
+                if ( seenProc.has(k) === false ) { seenProc.add(k); styles.push(k); }
+            } else if ( v && typeof v.selector === 'string' ) {
+                // Procedural filter for uBO's engine, keyed like uBO (by raw).
+                if ( seenProc.has(v.raw) === false ) { seenProc.add(v.raw); procedural.push(v); }
+            }
         }
     }
-    return { selectors, procedural, scriptlets, disabled: false };
+
+    // Highly generic selectors that some site excepts (`site#@#sel`). They
+    // cannot live in generic-high.css, which applies to every page, so they are
+    // applied here, per page. (Lowly generic exceptions are evaluated in the
+    // page by generic.js.)
+    for ( const { s, x } of (noGeneric ? [] : await loadGenericExcepted()) ) {
+        if ( Array.isArray(x) && excluded(x) ) { continue; }
+        if ( seenSel.has(s) === false ) { seenSel.add(s); selectors.push(s); }
+    }
+    // User generic filters (`##.sel` in My filters) apply to every page.
+    for ( const s of (noGeneric ? [] : (user.generic ?? [])) ) {
+        if ( seenSel.has(s) === false ) { seenSel.add(s); selectors.push(s); }
+    }
+    return { selectors, styles, procedural, disabled: false };
+}
+
+// In-memory copy of the compiled user cosmetic filters; dropped whenever they
+// are recompiled so the next page sees the new set.
+let userCosmeticCache = null;
+async function loadUserCosmetic() {
+    if ( userCosmeticCache === null ) {
+        userCosmeticCache = await chrome.storage.local.get(USER_COSMETIC_KEY)
+            .then(g => g[USER_COSMETIC_KEY] ?? { byHost: {}, generic: [] })
+            .catch(() => ({ byHost: {}, generic: [] }));
+    }
+    return userCosmeticCache;
+}
+
+// Recompile "My filters" (cosmetic + scriptlets) and apply them. Serialized:
+// save, import and the whitelist toggle can all trigger it.
+let userFiltersChain = Promise.resolve();
+function reapplyUserFilters() {
+    const run = userFiltersChain.then(reapplyUserFiltersNow, reapplyUserFiltersNow);
+    userFiltersChain = run.catch(() => {});
+    return run;
+}
+async function reapplyUserFiltersNow() {
+    const config = await loadConfig();
+    const whitelistPatterns = (config.whitelist ?? [])
+        .map(w => String(w).trim().toLowerCase())
+        .filter(h => VALID_MATCH_HOST.test(h))
+        .map(hostPattern);
+    const status = await applyUserFilters(config, whitelistPatterns);
+    userCosmeticCache = null;
+    return status;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -528,61 +643,142 @@ async function applyStaticDeltas(entries, report) {
 // Chrome's cap on registered content scripts is not documented as a constant, so
 // registration is done in chunks and any rejection is reported with the count
 // that failed rather than silently leaving scriptlets uninstalled.
-async function registerScriptletScripts() {
-    const registrations = await fetch(chrome.runtime.getURL('scriptlets/registrations.json'))
+// Chrome match-pattern host: dot-separated [a-z0-9-] labels only.
+const VALID_MATCH_HOST = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
+const hostPattern = h => (VALID_MATCH_HOST.test(h) ? `*://*.${h}/*` : null);
+const hostFromPattern = p => /^\*:\/\/\*\.([^/]+)\/\*$/.exec(p)?.[1] ?? null;
+const hostsRelated = (a, b) => a === b || a.endsWith('.' + b) || b.endsWith('.' + a);
+
+async function loadHideExceptions() {
+    return fetch(chrome.runtime.getURL('data/cosmetic/hide-exceptions.json'))
         .then(r => r.json())
-        .catch(() => []);
-    if ( registrations.length === 0 ) { return { registered: 0, failed: [] }; }
+        .catch(() => ({ generic: [], specific: [] }));
+}
 
-    // Start from a clean slate so a rebuild never leaves stale registrations.
-    const existing = await chrome.scripting.getRegisteredContentScripts().catch(() => []);
-    const ours = existing.filter(s => s.id.startsWith('ubmv3-')).map(s => s.id);
-    if ( ours.length !== 0 ) {
-        await chrome.scripting.unregisterContentScripts({ ids: ours }).catch(() => {});
-    }
+// Registration reads the current registrations and converges on the desired
+// set; reconcile() and the per-site toggle can both trigger it, so it is queued
+// to keep two runs from computing against the same stale read.
+let registrationChain = Promise.resolve();
+function registerScriptletScripts() {
+    const run = registrationChain.then(registerScriptletScriptsNow, registerScriptletScriptsNow);
+    registrationChain = run.catch(() => {});
+    return run;
+}
 
-    const scripts = registrations.map(r => ({
-        id: r.id,
-        js: r.js,
-        matches: r.matches,
+async function registerScriptletScriptsNow() {
+    const [ registrations, config ] = await Promise.all([
+        fetch(chrome.runtime.getURL('scriptlets/registrations.json')).then(r => r.json()).catch(() => []),
+        loadConfig(),
+    ]);
+
+    // uBlock Origin injects neither scriptlets nor cosmetic filters on a
+    // whitelisted site (getNetFilteringSwitch gates both). Expressed here as
+    // excludeMatches, so the browser itself skips injection there.
+    const whitelistHosts = (config.whitelist ?? []).map(w => String(w).trim().toLowerCase())
+        .filter(h => VALID_MATCH_HOST.test(h));
+
+    const scripts = registrations.map(r => {
+        // A shard only needs the whitelist hosts that can overlap its matches;
+        // the everywhere-matching wildcard registration needs all of them.
+        const matchHosts = r.matches.map(hostFromPattern);
+        const everywhere = matchHosts.includes(null);
+        const excludes = whitelistHosts
+            .filter(w => everywhere || matchHosts.some(m => m !== null && hostsRelated(w, m)))
+            .map(hostPattern);
+        // Always sent, even when empty: updateContentScripts only changes the
+        // fields it is given, so omitting it would leave exclusions from a
+        // whitelist entry the user has since removed.
+        return {
+            id: r.id,
+            js: r.js,
+            matches: r.matches,
+            excludeMatches: excludes,
+            runAt: 'document_start',
+            world: r.world,
+            allFrames: true,
+            persistAcrossSessions: true,
+        };
+    });
+
+    // Generic cosmetic filtering (highly generic stylesheet + lowly generic DOM
+    // surveyor), skipped on whitelisted sites. $generichide/$elemhide sites are
+    // checked in the page by generic.js rather than listed here: Chrome keeps
+    // every registered match pattern in every renderer process, and the page
+    // check also covers entity and regex hostname forms.
+    scripts.push({
+        id: 'ubmv3-generic',
+        js: [ 'data/cosmetic/generic-lookup.js', 'generic.js' ],
+        matches: [ 'http://*/*', 'https://*/*' ],
+        excludeMatches: whitelistHosts.map(hostPattern),
         runAt: 'document_start',
-        world: r.world,
+        world: 'ISOLATED',
         allFrames: true,
+        matchOriginAsFallback: true,
         persistAcrossSessions: true,
-    }));
+    });
+
+    // Converge on the desired set rather than unregister-then-register. The old
+    // approach failed with "Duplicate script ID" whenever two reconciles ran
+    // concurrently: both cleared, then both registered the same ids. Updating
+    // what exists and registering only what is missing is safe to repeat.
+    const existing = await chrome.scripting.getRegisteredContentScripts().catch(() => []);
+    const have = new Set(existing.filter(s => s.id.startsWith('ubmv3-')).map(s => s.id));
+    const want = new Set(scripts.map(s => s.id));
+
+    const stale = [ ...have ].filter(id => want.has(id) === false);
+    if ( stale.length !== 0 ) {
+        await chrome.scripting.unregisterContentScripts({ ids: stale }).catch(() => {});
+    }
 
     const failed = [];
     let registered = 0;
+    const toUpdate = scripts.filter(s => have.has(s.id));
+    const toAdd = scripts.filter(s => have.has(s.id) === false);
+
+    // Apply in chunks; on a chunk failure retry per script so one bad entry does
+    // not cost the rest, and treat a duplicate id as "update instead".
     const CHUNK = 16;
-    for ( let i = 0; i < scripts.length; i += CHUNK ) {
-        const chunk = scripts.slice(i, i + CHUNK);
-        try {
-            await chrome.scripting.registerContentScripts(chunk);
-            registered += chunk.length;
-        } catch ( reason ) {
-            // Retry one at a time so a single bad entry does not cost the chunk.
-            for ( const s of chunk ) {
-                try {
-                    await chrome.scripting.registerContentScripts([ s ]);
-                    registered += 1;
-                } catch ( inner ) {
-                    failed.push({ id: s.id, matches: s.matches.length, error: inner.message });
+    const applyChunked = async (list, fn, fallback) => {
+        for ( let i = 0; i < list.length; i += CHUNK ) {
+            const chunk = list.slice(i, i + CHUNK);
+            try {
+                await fn(chunk);
+                registered += chunk.length;
+            } catch {
+                for ( const s of chunk ) {
+                    try {
+                        await fn([ s ]);
+                        registered += 1;
+                    } catch ( inner ) {
+                        if ( fallback ) {
+                            try { await fallback([ s ]); registered += 1; continue; }
+                            catch ( again ) { failed.push({ id: s.id, error: again.message }); continue; }
+                        }
+                        failed.push({ id: s.id, matches: s.matches.length, error: inner.message });
+                    }
                 }
             }
         }
-    }
+    };
+    const update = list => chrome.scripting.updateContentScripts(list);
+    const register = list => chrome.scripting.registerContentScripts(list);
+    await applyChunked(toUpdate, update, register);
+    await applyChunked(toAdd, register, update);
     // Persist the outcome. Registration happens on install/startup, long before
     // anyone opens the dashboard, and a silent total failure here disables every
     // scriptlet while the rest of the extension looks perfectly healthy -- which
     // is exactly what happened when 2,548 invalid match patterns were shipped.
     const outcome = {
         registered, failed, total: scripts.length,
+        whitelistExcluded: whitelistHosts.length,
         at: Date.now(),
         ok: failed.length === 0 && registered === scripts.length,
     };
     await chrome.storage.local.set({ scriptletRegistration: outcome });
     if ( outcome.ok === false ) {
-        console.error('[uBlockMV3] scriptlet registration incomplete', outcome);
+        // Stringified: a bare object logs as "[object Object]" in extension error
+        // views, which hid the actual failure reasons.
+        console.error('[uBlockMV3] scriptlet registration incomplete ' + JSON.stringify(outcome));
     }
     return outcome;
 }
@@ -663,7 +859,17 @@ async function applyHostnameSwitches(config) {
 // Bring the browser's state in line with the stored config. Each step is
 // isolated: one failing must not prevent the others from applying, or a single
 // bad list would leave the user with no blocking at all.
-async function reconcile() {
+// onInstalled, onStartup and an import can all trigger a reconcile, and in MV3
+// they can overlap. Every step mutates shared browser state (dynamic rules,
+// registered scripts), so overlapping runs race. Queue them instead.
+let reconcileChain = Promise.resolve();
+function reconcile() {
+    const run = reconcileChain.then(reconcileOnce, reconcileOnce);
+    reconcileChain = run.catch(() => {});
+    return run;
+}
+
+async function reconcileOnce() {
     const config = await loadConfig();
     const results = { };
     try {
@@ -685,6 +891,11 @@ async function reconcile() {
         results.scriptlets = await registerScriptletScripts();
     } catch ( reason ) {
         results.scriptletsError = reason.message;
+    }
+    try {
+        results.userFilters = await reapplyUserFilters();
+    } catch ( reason ) {
+        results.userFiltersError = reason.message;
     }
     const rules = await getDynamicRules();
     results.budget = auditBudget(rules);
@@ -715,13 +926,32 @@ chrome.alarms.onAlarm.addListener(async alarm => {
 const HANDLERS = {
     async getCosmetic({ hostname }) { return cosmeticFor(hostname); },
 
+    // uBO's procedural engine, injected only into frames that have procedural
+    // filters (content.js asks). Declaring it for every frame cost memory and
+    // parse time on the large majority of frames that never use it.
+    async injectProcedural(msg, sender) {
+        const tabId = sender?.tab?.id;
+        const frameId = sender?.frameId;
+        if ( typeof tabId !== 'number' || typeof frameId !== 'number' ) {
+            return { injected: false, error: 'no sender frame' };
+        }
+        await chrome.scripting.executeScript({
+            target: { tabId, frameIds: [ frameId ] },
+            files: [ 'procedural.js' ],
+            injectImmediately: true,
+        });
+        return { injected: true };
+    },
+
     async getStatus({ hostname }) {
         const config = await loadConfig();
         const rules = await getDynamicRules();
         const enabledRulesets = await chrome.declarativeNetRequest.getEnabledRulesets();
+        const wl = new Set((config.whitelist ?? []).map(w => String(w).trim().toLowerCase()));
         return {
             hostname,
-            whitelisted: (config.whitelist ?? []).includes(hostname),
+            // Same ladder rule as uBO: a parent-domain entry covers subdomains.
+            whitelisted: hostname !== '' && (wl.has(hostname) || hostnameLadder(hostname).some(h => wl.has(h))),
             whitelistSize: (config.whitelist ?? []).length,
             dynamicRules: rules.length,
             enabledRulesets: enabledRulesets.length,
@@ -808,7 +1038,20 @@ const HANDLERS = {
         cache['user-filters'] = userFilters;
         await setCachedText(cache);
         const install = await rebuildDynamicLists();
-        return { install };
+        // Cosmetic and scriptlet user filters, compiled from the saved text.
+        const user = await reapplyUserFilters();
+        return { install, user };
+    },
+
+    // Status of "My filters" for the dashboard. If scriptlet filters were
+    // waiting on "Allow user scripts" and it has since been enabled, apply now:
+    // Chrome raises no event when the user flips that switch.
+    async getUserFiltersStatus() {
+        let status = await chrome.storage.local.get(USER_STATUS_KEY).then(g => g[USER_STATUS_KEY] ?? null);
+        if ( status === null || (status.userScripts !== 'enabled' && await userScriptsAvailable()) ) {
+            status = await reapplyUserFilters();
+        }
+        return status;
     },
 
     // Chrome enforces a cap on disabled static rules -- the error string
@@ -875,7 +1118,8 @@ const HANDLERS = {
         const regOutcome = await chrome.storage.local.get('scriptletRegistration')
             .then(g => g.scriptletRegistration ?? null);
         const expected = await fetch(chrome.runtime.getURL('scriptlets/registrations.json'))
-            .then(r => r.json()).then(a => a.length).catch(() => null);
+            // +1: the generic cosmetic registration (ubmv3-generic).
+            .then(r => r.json()).then(a => a.length + 1).catch(() => null);
         const switches = parseHostnameSwitches(config.hostnameSwitchesString).map(sw => ({
             ...sw, support: SWITCH_SUPPORT[sw.name] ?? 'unknown switch',
         }));
@@ -892,6 +1136,7 @@ const HANDLERS = {
                 lastRegistration: regOutcome,
             },
             hostnameSwitches: switches,
+            userFilters: await chrome.storage.local.get(USER_STATUS_KEY).then(g => g[USER_STATUS_KEY] ?? null),
             cosmeticIndex: index,
             shardCount: SHARD_COUNT,
             limits: chrome.declarativeNetRequest

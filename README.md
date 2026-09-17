@@ -25,6 +25,12 @@ GPL-3.0-or-later.
 
 Requires Chrome 121 or newer.
 
+**Optional:** to run scriptlet filters you write yourself (`##+js(...)` in
+Dashboard → **My filters**), open the extension's **Details** on
+`chrome://extensions` and turn on **Allow user scripts**. Chrome requires that
+switch before an extension may run code that is not part of its package. Filter
+lists do not need it, and My filters shows a notice while it is off.
+
 ### Updating the extension
 
 Download the new zip from [Releases](../../releases) and load it again.
@@ -152,16 +158,25 @@ filter lists ──> @gorhill/ubo-core ──> declarativeNetRequest rules
 Split between static rulesets (large lists, patched at runtime) and dynamic rules
 (everything else, replaced outright).
 
-**Cosmetic filters.** The corpus is ~29 MB, and an MV3 service worker is evicted
-constantly, so it is sharded by hostname (FNV-1a, 64 shards). A page load touches
-one shard — 472 KiB worst case instead of 29 MB. Generic selectors ship as one
-declarative stylesheet.
+**Cosmetic filters.** Site-specific filters (~29 MB) are sharded by hostname
+(FNV-1a, 64 shards) and served per page by the service worker; a page load
+touches one shard. Generic filters work the way uBO does it: a small in-page
+surveyor hashes the page's class and id names and injects only the selectors
+keyed on names actually present, plus the few thousand "highly generic"
+selectors that have no key. uBO's procedural engine is injected only into frames
+that have procedural filters.
 
 **Scriptlets.** Must run before the page's own scripts, which rules out a message
-round-trip, so they are registered as `document_start` content scripts scoped to
-the hostnames that need them — 130 registrations, 49,616 match patterns, in both
-MAIN and ISOLATED worlds. uBO hostnames that cannot be Chrome match patterns
-(entity patterns like `imgtown.*`, regex hostnames) are matched in-page instead.
+round-trip. They are registered once per world (MAIN and ISOLATED) for all pages,
+and each page looks its own hostname up in a compact, hash-bucketed table (uBO
+Lite's layout). An earlier design registered scripts scoped to each hostname —
+130 registrations carrying 49,615 match patterns — and Chrome keeps every
+registered pattern in every renderer process: measured on 8 real sites that cost
+~150 MB, growing with each open tab. Now: 2 registrations, 4 patterns.
+
+**My filters.** Compiled in the browser with uBO's engine whenever you save:
+network filters become dynamic rules, cosmetic filters join the per-page answer,
+and scriptlet filters are registered through `chrome.userScripts`.
 
 ### Invariants the build enforces
 
@@ -182,6 +197,9 @@ Each of these fails silently if broken, so each is checked mechanically:
 6. **Match patterns** — one invalid pattern makes `registerContentScripts()`
    reject every script, disabling all scriptlets while the extension still looks
    healthy.
+7. **Shipped contents** — build-only data (scriptlet shards) and retired files
+   must not ship, and nothing is web-accessible, so pages cannot read or detect
+   the extension's files.
 
 ---
 

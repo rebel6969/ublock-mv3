@@ -261,6 +261,7 @@ function main() {
             // validated here rather than discovered in the browser.
             for ( const p of r.matches ) {
                 if ( p === '*://*/*' || p === '<all_urls>' ) { continue; }
+                if ( p === 'http://*/*' || p === 'https://*/*' ) { continue; }
                 const m = /^\*:\/\/\*\.([^/]+)\/\*$/.exec(p);
                 if ( m === null || VALID_MATCH_HOST.test(m[1]) === false ) {
                     fail(`registration "${r.id}" has an invalid match pattern: ${p}`);
@@ -275,18 +276,23 @@ function main() {
     // --- cosmetic shards ----------------------------------------------------
     const cosDir = resolve(DIST, 'data', 'cosmetic');
     const specific = readdirSync(cosDir).filter(f => /^specific-\d+\.json$/.test(f));
-    const scriptlet = readdirSync(cosDir).filter(f => /^scriptlet-\d+\.json$/.test(f));
     const index = JSON.parse(readFileSync(resolve(cosDir, 'index.json'), 'utf-8'));
     if ( specific.length !== index.shardCount ) {
         fail(`expected ${index.shardCount} specific shards, found ${specific.length}`);
     }
-    if ( scriptlet.length !== index.shardCount ) {
-        fail(`expected ${index.shardCount} scriptlet shards, found ${scriptlet.length}`);
+    // Scriptlet shards are build input only; they must not ship.
+    const shippedScriptletShards = readdirSync(cosDir).filter(f => /^scriptlet-/.test(f));
+    if ( shippedScriptletShards.length !== 0 ) {
+        fail(`build-only scriptlet data shipped in data/cosmetic: ${shippedScriptletShards.slice(0, 3).join(', ')}`);
     }
-    const genericCss = resolve(cosDir, 'generic.css');
-    if ( existsSync(genericCss) === false ) { fail('data/cosmetic/generic.css missing'); }
-    note(`cosmetic: ${specific.length} specific + ${scriptlet.length} scriptlet shards, ` +
-        `generic.css ${(statSync(genericCss).size / 1048576).toFixed(2)} MiB`);
+    const genericLookup = resolve(cosDir, 'generic-lookup.js');
+    if ( existsSync(genericLookup) === false ) { fail('data/cosmetic/generic-lookup.js missing'); }
+    for ( const retired of [ 'generic.css', 'generic-high.json', 'generic-high.css' ] ) {
+        if ( existsSync(resolve(cosDir, retired)) ) { fail(`retired file still shipped: data/cosmetic/${retired}`); }
+    }
+    note(`cosmetic: ${specific.length} specific shards, generic-lookup.js ` +
+        `${(statSync(genericLookup).size / 1048576).toFixed(2)} MiB ` +
+        `(${index.genericLowlySelectors} lowly + ${index.genericHighSelectors} highly generic)`);
 
     // --- delta-update baselines ---------------------------------------------
     // Every static ruleset needs a baseline, and it must describe exactly the
