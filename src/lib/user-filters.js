@@ -18,6 +18,7 @@
 // filters cannot run, and that is recorded in the status rather than hidden.
 import { dnrRulesetFromRawLists } from '@gorhill/ubo-core/js/static-dnr-filtering.js';
 import { ENV } from './env-runtime.js';
+import { EXTENSION_PATHS } from './redirect-paths.js';
 import { parseSpecific } from './cosmetic-parse.js';
 
 export const USER_COSMETIC_KEY = 'userCosmetic';
@@ -80,7 +81,8 @@ export async function compileUserFilters(text, { trusted = false } = {}) {
     // uBO trusts user filters only when userFiltersTrusted is on; ubo-core
     // accepts trust solely through this directive.
     const body = trusted ? `!#trusted on ${secret}\n${text}\n!#trusted off ${secret}\n` : text;
-    const res = await dnrRulesetFromRawLists([ { name: 'user-filters', text: body } ], { env: ENV, secret });
+    const res = await dnrRulesetFromRawLists([ { name: 'user-filters', text: body } ],
+        { env: ENV, secret, extensionPaths: EXTENSION_PATHS });
 
     // Specific cosmetic filters: host -> values, same shape as the build shards.
     const cosmetic = {};

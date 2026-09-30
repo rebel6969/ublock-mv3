@@ -1,3 +1,5 @@
+import { redirectResources } from './redirects.mjs';
+
 // The filter-list preprocessor environment for this blocker.
 //
 // Filter lists gate sections with `!#if <token>` / `!#endif`. ubo-core maps each
@@ -30,4 +32,7 @@ export const ENV = [
 ];
 
 // Options object shared by every call into ubo-core, so no tool can drift.
-export const DNR_OPTIONS = { env: ENV };
+// extensionPaths maps redirect tokens to packaged stand-ins (tools/lib/redirects.mjs);
+// the service worker gets the identical map from src/lib/redirect-paths.js,
+// which tools/assemble.mjs generates from the same source.
+export const DNR_OPTIONS = { env: ENV, extensionPaths: redirectResources().extensionPaths };

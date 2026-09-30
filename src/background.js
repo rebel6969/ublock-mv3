@@ -8,6 +8,7 @@
 // dynamic lists; static rulesets are toggled, not rewritten.
 import { dnrRulesetFromRawLists } from '@gorhill/ubo-core/js/static-dnr-filtering.js';
 import { ENV } from './lib/env-runtime.js';
+import { EXTENSION_PATHS } from './lib/redirect-paths.js';
 import { SHARD_COUNT, shardOf, hostnameLadder } from './lib/shard.js';
 import {
     loadConfig, saveConfig, validateBackup, toBackup, backupFilename,
@@ -50,7 +51,9 @@ async function saveListState(state) {
 function isRule(r) { return r._error === undefined && r.action !== undefined; }
 
 async function compileToDNR(lists) {
-    const res = await dnrRulesetFromRawLists(lists, { env: ENV });
+    // Same options as the build (tools/lib/env.mjs), or recompiled lists would
+    // drop their redirect rules and diverge from the build-time baselines.
+    const res = await dnrRulesetFromRawLists(lists, { env: ENV, extensionPaths: EXTENSION_PATHS });
     const emitted = res.network.ruleset || [];
     return {
         rules: emitted.filter(isRule),
@@ -101,8 +104,8 @@ async function setCachedText(cache) {
 // One compile over all enabled lists (not one per list) so cross-list exception
 // filters resolve, matching how uBO evaluates them.
 async function rebuildDynamicLists() {
-    const [ seed, state, cache ] = await Promise.all([
-        loadDynamicSeed(), loadListState(), getCachedText(),
+    const [ seed, state, cache, config ] = await Promise.all([
+        loadDynamicSeed(), loadListState(), getCachedText(), loadConfig(),
     ]);
 
     const lists = [];
@@ -116,6 +119,16 @@ async function rebuildDynamicLists() {
             // Never refetched since install: use the rules compiled at build time.
             usedPrebuilt.push(entry);
         }
+    }
+
+    // My filters (network part). Not a seed list -- the saved text is the only
+    // source -- so it is compiled on every rebuild (save, install, startup), in
+    // the same pass as the lists. The build reserves its share of the dynamic
+    // budget (tools/emit-extension.mjs) but ships none of these rules; before
+    // this they were never installed anywhere.
+    const userText = String(config.userFilters ?? '');
+    if ( userText.trim() !== '' ) {
+        lists.push({ name: 'user-filters', text: userText });
     }
 
     let rules = [];

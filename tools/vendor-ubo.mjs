@@ -26,7 +26,10 @@ const RAW = `https://raw.githubusercontent.com/${REPO}/${UBO_REF}`;
 // contentscript-extra.js: uBO's procedural cosmetic engine (:has, :upward,
 // :style(), :remove-attr(), ...). Reimplementing it previously turned 10,547
 // :style()/:remove-*() filters into plain hides.
-const EXTRA_JS = [ 'arglist-parser.js', 'jsonpath.js', 'urlskip.js', 'contentscript-extra.js' ];
+// redirect-resources.js: the token -> file map (with aliases) for the resources
+// vendored below, taken from the same ref so the two always agree; ubo-core's
+// packaged copy lags behind and misses newer resources.
+const EXTRA_JS = [ 'arglist-parser.js', 'jsonpath.js', 'urlskip.js', 'contentscript-extra.js', 'redirect-resources.js' ];
 
 const headers = { 'User-Agent': 'ublock-mv3-build' };
 if ( process.env.GITHUB_TOKEN ) {

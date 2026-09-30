@@ -80,19 +80,27 @@ installing a newer release resets it. The dashboard warns well before that.
 
 ## What MV3 costs you
 
-Honest accounting. These are browser limitations, not implementation gaps — uBO
-Lite has the same ones.
+Honest accounting, as measured on this build's lists.
 
-**5,024 filters (4.2%) cannot be expressed in MV3 at all:**
+**2,167 filters (1.8%) cannot be expressed in MV3:**
 
 | Count | Reason |
 |---|---|
-| 2,850 | Unpatchable redirect filters |
-| 591 | `$replace=` — rewriting response bodies is impossible in MV3 |
-| 570 | Otherwise incompatible with declarativeNetRequest |
+| 576 | Rejected by uBO's DNR compiler: options with no DNR form, e.g. `$replace=` (rewriting response bodies) and `$urlskip=` |
+| 572 | Otherwise incompatible with declarativeNetRequest |
 | 413 | `domain=` entity wildcards (`example.*`) |
-| 117 | Regex filters RE2 cannot compile |
-| ~483 | `removeparam`/`csp` exceptions, `strict1p`/`strict3p`, `header=`, `ipaddress=` |
+| 253 | `removeparam`/`csp`/`permissions` exceptions, regex `removeparam`, `strict1p`/`strict3p` |
+| 150 | `ipaddress=`: DNR cannot match on IP addresses |
+| 118 | Regex filters RE2 cannot compile |
+| 61 | `header=` |
+| 15 | Redirect filters naming a resource uBO 1.75.0 does not ship (e.g. `didomi-loader`), or `redirect=none` |
+| 9 | Invalid filters |
+
+Redirect filters (`redirect=`, `redirect-rule=`) otherwise work, as in uBO Lite:
+matching requests are answered with uBO's own stand-ins (`noop.js`,
+`google-ima.js`, `1x1.gif`, ...), shipped in `web_accessible_resources/` with
+`use_dynamic_url`, so pages cannot probe for the extension. A page whose own
+request is redirected can still see the stand-in's `chrome-extension://` URL.
 
 Also missing, and not fixable:
 

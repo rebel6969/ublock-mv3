@@ -38,6 +38,9 @@ const VALID_MATCH_HOST = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a
 
 const problems = [];
 const notes = [];
+// Redirect stand-ins: declared = manifest web_accessible_resources (as
+// "/path"), filled before any rule is validated.
+const redirects = { declared: new Set(), used: new Set(), rules: 0 };
 function fail(msg) { problems.push(msg); }
 function note(msg) { notes.push(msg); }
 
@@ -99,6 +102,17 @@ function validateRule(rule, where, seenIds) {
     if ( action.type === 'redirect' && action.redirect === undefined ) {
         fail(`${where}: rule ${rule.id} is a redirect with no redirect target`);
     }
+    // A redirect to a missing or unlisted stand-in does not fail loudly: the
+    // page's request just errors, so the check has to happen here.
+    const extensionPath = action.redirect?.extensionPath;
+    if ( extensionPath !== undefined ) {
+        redirects.rules += 1;
+        redirects.used.add(extensionPath);
+        if ( redirects.declared.has(extensionPath) === false ) {
+            fail(`${where}: rule ${rule.id} redirects to ${extensionPath}, ` +
+                'which is not a declared web-accessible resource');
+        }
+    }
     return {
         regex: cond.regexFilter !== undefined ? 1 : 0,
         unsafe: SAFE_ACTIONS.has(action.type) ? 0 : 1,
@@ -149,6 +163,16 @@ function main() {
         }
     }
     note(`manifest references ${referenced.length} files, all present`);
+
+    // Every declared web-accessible resource must exist.
+    for ( const entry of (manifest.web_accessible_resources ?? []) ) {
+        for ( const res of (entry.resources ?? []) ) {
+            redirects.declared.add(`/${res}`);
+            if ( existsSync(resolve(DIST, res)) === false ) {
+                fail(`web_accessible_resources lists a missing file: ${res}`);
+            }
+        }
+    }
 
     // --- static rulesets --------------------------------------------------
     const rr = manifest.declarative_net_request?.rule_resources ?? [];
@@ -234,6 +258,8 @@ function main() {
         fail(`regex rules ${totalRegex} > ${LIMITS.MAX_NUMBER_OF_REGEX_RULES} (static ${staticRegex} + dynamic ${dynRegex})`);
     }
     note(`regex total: ${totalRegex} / ${LIMITS.MAX_NUMBER_OF_REGEX_RULES}`);
+    note(`redirects: ${redirects.rules.toLocaleString()} rules to ${redirects.used.size} stand-ins, ` +
+        `all declared (${redirects.declared.size} web-accessible files present)`);
 
     // --- scriptlet registrations -------------------------------------------
     const regPath = resolve(DIST, 'scriptlets', 'registrations.json');
