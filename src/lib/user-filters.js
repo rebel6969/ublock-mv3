@@ -24,7 +24,26 @@ export const USER_COSMETIC_KEY = 'userCosmetic';
 export const USER_STATUS_KEY = 'userFiltersStatus';
 
 const USER_SCRIPT_IDS = { MAIN: 'ubmv3-user-main', ISOLATED: 'ubmv3-user-isolated' };
-const BUNDLE_FILES = { MAIN: 'scriptlets/main-bundle.js', ISOLATED: 'scriptlets/isolated-bundle.js' };
+
+// The files each world's packaged registration injects ahead of its hostname
+// lookup (MAIN: pass-through, then bundle). User scripts inject the same files
+// ahead of their own call table, so both paths always load identical code.
+let preludePromise = null;
+function loadPreludeFiles() {
+    if ( preludePromise === null ) {
+        preludePromise = fetch(chrome.runtime.getURL('scriptlets/registrations.json'))
+            .then(r => r.json())
+            .then(regs => {
+                const out = {};
+                for ( const r of regs ) {
+                    out[r.world] = r.js.filter(f => f.endsWith('-lookup.js') === false);
+                }
+                return out;
+            })
+            .catch(reason => { preludePromise = null; throw reason; });
+    }
+    return preludePromise;
+}
 
 const toPlain = v => {
     if ( !v ) { return []; }
@@ -159,10 +178,15 @@ export async function userScriptsAvailable() {
 
 // Converge chrome.userScripts on the compiled scriptlet tables.
 async function registerUserScriptlets(scriptlets, excludeMatches) {
+    const prelude = await loadPreludeFiles();
     const wanted = [];
     for ( const world of [ 'MAIN', 'ISOLATED' ] ) {
         const table = scriptlets[world];
         if ( Object.keys(table).length === 0 ) { continue; }
+        const files = prelude[world];
+        if ( Array.isArray(files) === false || files.length === 0 ) {
+            throw new Error(`this build has no ${world}-world scriptlet bundle`);
+        }
         wanted.push({
             id: USER_SCRIPT_IDS[world],
             matches: [ 'http://*/*', 'https://*/*' ],
@@ -172,7 +196,7 @@ async function registerUserScriptlets(scriptlets, excludeMatches) {
             // MAIN-world scriptlets patch page globals; ISOLATED ones only need
             // the DOM, which the user-script world has.
             world: world === 'MAIN' ? 'MAIN' : 'USER_SCRIPT',
-            js: [ { file: BUNDLE_FILES[world] }, { code: userScriptCode(world, table) } ],
+            js: [ ...files.map(file => ({ file })), { code: userScriptCode(world, table) } ],
         });
     }
     const existing = await chrome.userScripts.getScripts();
