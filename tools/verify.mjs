@@ -359,6 +359,39 @@ function main() {
         }
     }
 
+    // --- page scripts are one-byte ------------------------------------------
+    // These run in every frame. V8 keeps a script one-byte only if every
+    // character is <= U+00FF; one character above that doubles the source in
+    // memory and moves it to the slower two-byte scanner, in every frame.
+    // Generated data is emitted ASCII-escaped (tools/lib/ascii-json.mjs).
+    {
+        const pageScripts = new Set();
+        for ( const cs of manifest.content_scripts ?? [] ) { for ( const f of cs.js ?? [] ) { pageScripts.add(f); } }
+        const regFile = resolve(DIST, 'scriptlets', 'registrations.json');
+        if ( existsSync(regFile) ) {
+            for ( const r of JSON.parse(readFileSync(regFile, 'utf-8')) ) { for ( const f of r.js ) { pageScripts.add(f); } }
+        }
+        // Registered by background.js (ubmv3-generic) and injected on demand.
+        for ( const f of [ 'data/cosmetic/generic-lookup.js', 'generic.js', 'procedural.js' ] ) { pageScripts.add(f); }
+        let chars = 0;
+        let twoByte = 0;
+        for ( const f of pageScripts ) {
+            const p = resolve(DIST, f);
+            if ( existsSync(p) === false ) { fail(`page script missing: ${f}`); continue; }
+            const src = readFileSync(p, 'utf-8');
+            chars += src.length;
+            let wide = 0;
+            for ( let i = 0; i < src.length; i++ ) { if ( src.charCodeAt(i) > 0xFF ) { wide += 1; } }
+            if ( wide !== 0 ) {
+                fail(`${f}: ${wide} character(s) above U+00FF make it two-byte in every frame -- emit it with asciiJSON`);
+                twoByte += 1;
+            }
+        }
+        if ( twoByte === 0 ) {
+            note(`page scripts: ${pageScripts.size} files, ${(chars / 1048576).toFixed(2)} M chars, all one-byte`);
+        }
+    }
+
     // --- service worker bundle ---------------------------------------------
     const sw = resolve(DIST, 'background.js');
     const swSrc = readFileSync(sw, 'utf-8');

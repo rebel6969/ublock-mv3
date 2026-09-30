@@ -48,6 +48,21 @@ async function fetchFile(path) {
     return res.text();
 }
 
+// Byte-exact: resources include images and media, which res.text() corrupts.
+async function fetchBinaryInto(paths, outDir, label) {
+    mkdirSync(outDir, { recursive: true });
+    let bytes = 0;
+    for ( const p of paths ) {
+        const res = await fetch(`${RAW}/${p}`, { headers });
+        if ( res.ok === false ) { throw new Error(`HTTP ${res.status} for ${p}`); }
+        const buf = Buffer.from(await res.arrayBuffer());
+        writeFileSync(resolve(outDir, p.split('/').pop()), buf);
+        bytes += buf.length;
+    }
+    console.log(`  ${label}: ${paths.length} files, ${(bytes / 1024).toFixed(0)} KiB`);
+    return paths.length;
+}
+
 async function fetchInto(paths, outDir, label) {
     mkdirSync(outDir, { recursive: true });
     let bytes = 0;
@@ -77,25 +92,25 @@ async function main() {
         'shared modules'
     );
 
-    const war = (await listDir('src/web_accessible_resources'))
-        .filter(e => e.type === 'file' && e.name.endsWith('.js'))
-        .map(e => `src/web_accessible_resources/${e.name}`);
-    await fetchInto(war, resolve(vendor, 'ubo-war'), 'redirect resources');
+    // Every resource, not only scripts: `war:` directives in scriptlet filters
+    // also name XML, JSON and image resources (noop-vast4.xml, noop.json, ...).
+    // The file list is recorded so the build can tell a stale vendor folder
+    // from a filter naming a resource uBO itself does not have.
+    const warNames = (await listDir('src/web_accessible_resources'))
+        .filter(e => e.type === 'file')
+        .map(e => e.name);
+    const warDir = resolve(vendor, 'ubo-war');
+    await fetchBinaryInto(warNames.map(n => `src/web_accessible_resources/${n}`), warDir, 'redirect resources');
+    writeFileSync(resolve(warDir, '.files.json'), JSON.stringify(warNames));
 
     // Icons. Fetched rather than read from a sibling uBlock0.chromium folder,
     // which only exists on the machine this project was first built on and made
     // CI fail with "missing icons".
-    const iconDir = resolve(vendor, 'ubo-icons');
-    mkdirSync(iconDir, { recursive: true });
-    let iconBytes = 0;
-    for ( const name of [ 'icon_16.png', 'icon_32.png', 'icon_64.png', 'icon_128.png' ] ) {
-        const res = await fetch(`${RAW}/src/img/${name}`, { headers });
-        if ( res.ok === false ) { throw new Error(`HTTP ${res.status} for icon ${name}`); }
-        const buf = Buffer.from(await res.arrayBuffer());
-        writeFileSync(resolve(iconDir, name), buf);
-        iconBytes += buf.length;
-    }
-    console.log(`  icons: 4 files, ${(iconBytes / 1024).toFixed(0)} KiB`);
+    await fetchBinaryInto(
+        [ 'icon_16.png', 'icon_32.png', 'icon_64.png', 'icon_128.png' ].map(n => `src/img/${n}`),
+        resolve(vendor, 'ubo-icons'),
+        'icons'
+    );
 
     const license = await fetchFile('LICENSE.txt');
     writeFileSync(resolve(vendor, 'ubo-resources', 'LICENSE.txt'), license);

@@ -25,6 +25,12 @@ export const USER_STATUS_KEY = 'userFiltersStatus';
 
 const USER_SCRIPT_IDS = { MAIN: 'ubmv3-user-main', ISOLATED: 'ubmv3-user-isolated' };
 
+// JSON with non-ASCII escaped, as tools/lib/ascii-json.mjs: the call table is
+// injected into every page, and one character above U+00FF would make V8 hold
+// and scan the whole script as two-byte source.
+const asciiJSON = value => JSON.stringify(value).replace(/[\u0080-￿]/g,
+    c => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+
 // The files each world's packaged registration injects ahead of its hostname
 // lookup (MAIN: pass-through, then bundle). User scripts inject the same files
 // ahead of their own call table, so both paths always load identical code.
@@ -147,7 +153,7 @@ const api = globalThis[${JSON.stringify(key)}];
 if ( api === undefined ) { return; }
 const hn = location.hostname;
 if ( hn === '' ) { return; }
-const T = ${JSON.stringify(table)};
+const T = ${asciiJSON(table)};
 const calls = [];
 const add = h => { const c = T[h]; if ( c !== undefined ) { calls.push(...c); } };
 const ladder = [ hn ];

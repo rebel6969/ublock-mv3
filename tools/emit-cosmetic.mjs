@@ -22,6 +22,7 @@ import { collectExceptions, relevantExceptionHosts } from './lib/exceptions.mjs'
 import { ENV as ENV_TOKENS } from './lib/env.mjs';
 import { resolve } from 'node:path';
 import { ROOT } from './lib/backup.mjs';
+import { asciiJSON } from './lib/ascii-json.mjs';
 import { DNR_OPTIONS } from './lib/env.mjs';
 import { SHARD_COUNT, shardOf } from './lib/shardcfg.mjs';
 import { dnrRulesetFromRawLists } from '@gorhill/ubo-core/js/static-dnr-filtering.js';
@@ -325,10 +326,10 @@ async function main() {
 //   H  highly generic stylesheet (${highSelectors.size} selectors)
 //   G  hostnames where generic cosmetic filtering is off ($generichide/$elemhide)
 self.__ubmv3_genericData = {
-B: ${JSON.stringify(buckets.map(b => b.join('')))},
-E: ${JSON.stringify(exceptionLists)},
-H: ${JSON.stringify(highCss)},
-G: ${JSON.stringify(hide.generic)},
+B: ${asciiJSON(buckets.map(b => b.join('')))},
+E: ${asciiJSON(exceptionLists)},
+H: ${asciiJSON(highCss)},
+G: ${asciiJSON(hide.generic)},
 };
 `;
     writeFileSync(resolve(OUT, 'generic-lookup.js'), genericData);

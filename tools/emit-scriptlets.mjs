@@ -18,6 +18,7 @@
 import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { ROOT } from './lib/backup.mjs';
+import { asciiJSON } from './lib/ascii-json.mjs';
 
 const DIST = resolve(ROOT, 'extension');
 // Build-only scriptlet data written by tools/emit-cosmetic.mjs.
@@ -90,6 +91,94 @@ const PASS_SITES = [
     { from: 'proxyApplyFn.nativeToString.call(proxied)', to: 'passApply(proxyApplyFn.nativeToString, proxied, [])', exact: true },
     { from: 'Reflect.apply(target, thisArg, args)', to: 'passApply(target, thisArg, args)', exact: false },
 ];
+
+// `war:` directives (prevent-fetch/prevent-xhr response bodies). uBO's
+// generateContentFn fetches the named resource from its web-accessible folder
+// with an XHR (responseType 'text'). Serving that folder here would need either
+// dynamic URLs, which MAIN-world code has no way to learn, or a fixed extension
+// URL that any page could probe to fingerprint the user. So the resources the
+// filters actually name are resolved inside the bundle instead: no request, no
+// exposure, and only what the corpus uses. A script already bundled as a
+// redirect resource is read back from its own function source (no added
+// bytes); anything else is inlined as a string literal only if it is tiny.
+// Every byte of this bundle is compiled in every frame of every page: measured
+// cold, adding the two larger scripts (gpt 5.1 KB, adsbygoogle 4.2 KB, used on
+// ~10 niche hosts) cost +0.59 ms (+20%) per frame, so those resolve to '' --
+// uBO's own result whenever warOrigin is unset -- and the build lists them.
+const WAR_INLINE_MAX = 256; // bytes of text
+const WAR_SITE = {
+    from: "if ( scriptletGlobals.warOrigin === undefined ) { return ''; }",
+    to: "if ( scriptletGlobals.warOrigin === undefined ) { return warText(directive.slice(4)); }",
+};
+
+// Resource names a generateContentFn directive asks for: `war:name`, also as a
+// part of uBO's `join:<2-char separator><part><sep><part>...`.
+function collectWarNames(directive, out) {
+    if ( typeof directive !== 'string' ) { return; }
+    if ( directive.startsWith('war:') ) { out.add(directive.slice(4)); return; }
+    if ( directive.startsWith('join:') && directive.length > 7 ) {
+        const sep = directive.slice(5, 7);
+        for ( const part of directive.slice(7).split(sep) ) { collectWarNames(part, out); }
+    }
+}
+
+// What uBO ships in web_accessible_resources, as recorded by vendor-ubo.mjs.
+// Absent means the vendored copy predates non-script resources: fail, because
+// every war: directive would silently resolve to nothing.
+function vendoredWarNames() {
+    const listPath = resolve(WAR, '.files.json');
+    if ( existsSync(listPath) === false ) {
+        throw new Error('vendor/ubo-war/.files.json missing: vendored resources are stale -- run `npm run vendor`');
+    }
+    return new Set(JSON.parse(readFileSync(listPath, 'utf-8')));
+}
+
+// The text uBO's XHR (responseType 'text') yields: UTF-8, BOM removed,
+// invalid sequences replaced -- exactly what TextDecoder does.
+function warTextOf(name) {
+    return new TextDecoder('utf-8').decode(readFileSync(resolve(WAR, name)));
+}
+
+// Body of `function NAME() {\n<text>\n}` exactly as the emitted warText() slices it.
+const warBodyOf = src => src.slice(src.indexOf('{') + 2, -2);
+
+function emitWarTable(names, warUsed) {
+    const available = vendoredWarNames();
+    const entries = [];
+    const stats = { reused: [], literals: [], tooLarge: [], notInUbo: [] };
+    for ( const name of [ ...names ].sort() ) {
+        // A name uBO does not ship: its XHR would 404 and yield '', as here.
+        if ( available.has(name) === false ) { stats.notInUbo.push(name); continue; }
+        const text = warTextOf(name);
+        if ( warUsed.has(name) && warUsed.get(name) === text ) {
+            // The bundled function is emitted as `function IDENT() {\n<code>\n}`.
+            const src = `function ${warIdent(name)}() {\n${text}\n}`;
+            if ( warBodyOf(src) !== text ) { throw new Error(`war: ${name} does not round-trip`); }
+            entries.push(`  [${JSON.stringify(name)}, ${warIdent(name)}],`);
+            stats.reused.push(name);
+            continue;
+        }
+        if ( text.length > WAR_INLINE_MAX ) { stats.tooLarge.push(`${name} ${text.length} B`); continue; }
+        entries.push(`  [${asciiJSON(name)}, ${asciiJSON(text)}],`);
+        stats.literals.push(name);
+    }
+    const lines = [
+        '// war: resources (see WAR_SITE in tools/emit-scriptlets.mjs). Native',
+        '// toString captured before any page script or scriptlet proxy runs.',
+        'const fnSource = Function.prototype.call.bind(Function.prototype.toString);',
+        'const WAR_TEXT = new Map([',
+        ...entries,
+        ']);',
+        'const warText = name => {',
+        '    const v = WAR_TEXT.get(name);',
+        "    if ( v === undefined ) { return ''; }",
+        "    if ( typeof v === 'string' ) { return v; }",
+        '    const s = fnSource(v);',
+        "    return s.slice(s.indexOf('{') + 2, -2);",
+        '};',
+    ];
+    return { lines, stats };
+}
 
 // Fail the build if vendored code expects an ambient global not provided above.
 function assertAmbientGlobals() {
@@ -184,7 +273,7 @@ function collectDependencies(index, rootNames) {
     return { needed, missing };
 }
 
-function emitBundle(index, names, world, warUsed = new Map()) {
+function emitBundle(index, names, world, warUsed = new Map(), warNames = new Set()) {
     const { needed, missing } = collectDependencies(index, names);
     // Emit dependencies (".fn") before the scriptlets that call them; within one
     // scope function declarations hoist, but ordering keeps the output readable
@@ -224,6 +313,7 @@ function emitBundle(index, names, world, warUsed = new Map()) {
     }
 
     const siteCounts = PASS_SITES.map(( ) => 0);
+    let warSiteCount = 0;
     const dispatch = [];
     for ( const name of ordered ) {
         const d = index.byName.get(name);
@@ -236,6 +326,10 @@ function emitBundle(index, names, world, warUsed = new Map()) {
                 siteCounts[i] += n;
                 src = src.split(site.from).join(site.to);
             });
+            if ( name === 'generate-content.fn' ) {
+                warSiteCount = src.split(WAR_SITE.from).length - 1;
+                src = src.split(WAR_SITE.from).join(WAR_SITE.to);
+            }
         }
         parts.push(src);
         if ( name.endsWith('.fn') ) { continue; }
@@ -261,6 +355,17 @@ function emitBundle(index, names, world, warUsed = new Map()) {
     }
     parts.push(']);');
 
+    let warStats = null;
+    if ( main && needed.has('generate-content.fn') ) {
+        if ( warSiteCount !== 1 ) {
+            throw new Error(`MAIN: expected 1 occurrence of "${WAR_SITE.from}" in vendored ` +
+                `generateContentFn, found ${warSiteCount} -- upstream changed; update WAR_SITE`);
+        }
+        const { lines, stats } = emitWarTable(warNames, warUsed);
+        parts.push(...lines);
+        warStats = stats;
+    }
+
     // uBO orders injected scriptlets by priority, highest first; unset is 0.
     const prio = dispatch
         .map(([ name ]) => [ name, index.byName.get(name)?.priority ])
@@ -271,7 +376,7 @@ function emitBundle(index, names, world, warUsed = new Map()) {
     let noAll = [];
     const noAllPath = resolve(SCRIPTLET_DATA, 'scriptlet-disable-all.json');
     if ( existsSync(noAllPath) ) { noAll = JSON.parse(readFileSync(noAllPath, 'utf-8')); }
-    parts.push(`const NO_SCRIPTLETS = ${JSON.stringify(noAll)};`);
+    parts.push(`const NO_SCRIPTLETS = ${asciiJSON(noAll)};`);
 
     // A failing scriptlet must never break the page or stop the others.
     parts.push(`
@@ -361,7 +466,7 @@ if ( Array.isArray(pending) ) { for ( const c of pending ) { apply(c); } }
         passSites = PASS_SITES.map((site, i) => [ site.from, siteCounts[i] ]);
     }
 
-    return { code: parts.join('\n'), count: dispatch.length, missing, passSites };
+    return { code: parts.join('\n'), count: dispatch.length, missing, passSites, warStats };
 }
 
 // Chrome match pattern hosts: labels of [a-z0-9-] only.
@@ -428,7 +533,7 @@ const api = globalThis[${JSON.stringify(key)}];
 if ( api === undefined ) { return; }
 const hn = location.hostname;
 if ( hn === '' ) { return; }
-const B = ${JSON.stringify(table.B)};
+const B = ${asciiJSON(table.B)};
 const hash = s => {
     let h = 0x811c9dc5;
     for ( let i = 0; i < s.length; i++ ) {
@@ -471,7 +576,7 @@ for ( const [ src, list ] of X ) {
     for ( const r of list.split(',') ) { refs.add(+r); }
 }` : ''}
 if ( refs.size === 0 ) { return; }
-const C = ${JSON.stringify(table.C)};
+const C = ${asciiJSON(table.C)};
 const chunks = new Map();
 const calls = [];
 for ( const r of refs ) {
@@ -535,6 +640,7 @@ async function main() {
     const ambient = assertAmbientGlobals();
     console.log(`ambient globals read by vendored code: ` +
         `${[ ...ambient.keys() ].join(', ') || 'none'} -- all defined in the bundles`);
+    vendoredWarNames(); // stale vendored resources fail here, before any work
     const registry = await loadRegistry();
     const index = buildIndex(registry);
     const invocable = registry.filter(d => d.name.endsWith('.fn') === false);
@@ -630,8 +736,10 @@ async function main() {
     }
 
     // --- emit bundles --------------------------------------------------------
-    if ( existsSync(OUT) ) { rmSync(OUT, { recursive: true, force: true }); }
-    mkdirSync(OUT, { recursive: true });
+    // Generated in memory and written only once every check has passed: a
+    // failing build must leave the previous output intact, because extension/
+    // is the folder Chrome runs the extension from.
+    const outputs = new Map(); // path under extension/ -> content
 
     const byWorld = { MAIN: [], ISOLATED: [] };
     for ( const name of usedTokens.keys() ) {
@@ -649,6 +757,16 @@ async function main() {
         }
     }
 
+    // Resources named by `war:` directives; generateContentFn is MAIN-world only.
+    const warNames = new Set();
+    for ( const calls of Object.values(merged.MAIN) ) {
+        for ( const item of calls ) {
+            const call = Array.isArray(item) ? item : item?.c;
+            if ( Array.isArray(call) === false ) { continue; }
+            for ( const arg of call.slice(1) ) { collectWarNames(arg, warNames); }
+        }
+    }
+
     const registrations = [];
     for ( const world of [ 'MAIN', 'ISOLATED' ] ) {
         const warForWorld = warUsedByWorld[world];
@@ -656,7 +774,8 @@ async function main() {
             console.log(`\n${world}: no scriptlets used`);
             continue;
         }
-        const { code, count, missing, passSites } = emitBundle(index, byWorld[world], world, warForWorld);
+        const { code, count, missing, passSites, warStats } = emitBundle(index, byWorld[world], world,
+            warForWorld, world === 'MAIN' ? warNames : new Set());
         if ( missing.size !== 0 ) {
             throw new Error(`${world}: missing scriptlet dependencies: ${[ ...missing ].join(', ')}`);
         }
@@ -664,13 +783,13 @@ async function main() {
         const bundleFile = `scriptlets/${world.toLowerCase()}-bundle.js`;
         const file = `scriptlets/${world.toLowerCase()}-lookup.js`;
         const js = emitLookupFile(world, table);
-        writeFileSync(resolve(DIST, bundleFile), code);
-        writeFileSync(resolve(DIST, file), js);
+        outputs.set(bundleFile, code);
+        outputs.set(file, js);
         // Order matters: Chrome injects js[] in sequence -- pass-through (MAIN
         // only), then the bundle that consumes it, then the lookup.
         const files = [ bundleFile, file ];
         if ( world === 'MAIN' ) {
-            writeFileSync(resolve(DIST, PASS_FILE), emitPassthroughFile());
+            outputs.set(PASS_FILE, emitPassthroughFile());
             files.unshift(PASS_FILE);
         }
         registrations.push({
@@ -690,6 +809,15 @@ async function main() {
         if ( c.other !== 0 ) {
             console.log(`  NOTE: ${c.other} hostname(s) matched no uBO host form and were dropped`);
         }
+        if ( warStats ) {
+            const s = warStats;
+            console.log(`  war: ${warNames.size} resources named -- ` +
+                `${s.reused.length} reuse a bundled function (${s.reused.join(', ') || '-'}), ` +
+                `${s.literals.length} inlined (${s.literals.join(', ') || '-'}), ` +
+                `${s.tooLarge.length} over ${WAR_INLINE_MAX} B left unresolved as uBO does without warOrigin ` +
+                `(${s.tooLarge.join(', ') || '-'})` +
+                (s.notInUbo.length ? `, ${s.notInUbo.length} not shipped by uBO (resolve to '', as in uBO): ${s.notInUbo.join(', ')}` : ''));
+        }
         if ( passSites !== null ) {
             console.log(`  pass-through (${PASS_FILE}): ` +
                 passSites.map(([ from, n ]) => `${n}x ${from}`).join(', '));
@@ -708,8 +836,13 @@ async function main() {
             for ( const a of (d.aliases ?? []) ) { catalog[a] = entry; }
         }
     }
-    writeFileSync(resolve(OUT, 'catalog.json'), JSON.stringify(catalog));
-    writeFileSync(resolve(OUT, 'registrations.json'), JSON.stringify(registrations));
+    outputs.set('scriptlets/catalog.json', JSON.stringify(catalog));
+    outputs.set('scriptlets/registrations.json', JSON.stringify(registrations));
+
+    // Every check has passed: replace the previous output.
+    if ( existsSync(OUT) ) { rmSync(OUT, { recursive: true, force: true }); }
+    mkdirSync(OUT, { recursive: true });
+    for ( const [ path, content ] of outputs ) { writeFileSync(resolve(DIST, path), content); }
     const totalPatterns = registrations.reduce((n, r) => n + r.matches.length, 0);
     console.log(`\nregistrations: ${registrations.length} content scripts, ` +
         `${totalPatterns.toLocaleString()} match patterns total`);
