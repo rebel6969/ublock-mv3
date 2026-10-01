@@ -9,6 +9,7 @@
 import { dnrRulesetFromRawLists } from '@gorhill/ubo-core/js/static-dnr-filtering.js';
 import { ENV } from './lib/env-runtime.js';
 import { EXTENSION_PATHS } from './lib/redirect-paths.js';
+import { withUbolNetworkFilters } from './lib/ubol-compat.js';
 import { SHARD_COUNT, shardOf, hostnameLadder } from './lib/shard.js';
 import {
     loadConfig, saveConfig, validateBackup, toBackup, backupFilename,
@@ -51,9 +52,10 @@ async function saveListState(state) {
 function isRule(r) { return r._error === undefined && r.action !== undefined; }
 
 async function compileToDNR(lists) {
-    // Same options as the build (tools/lib/env.mjs), or recompiled lists would
-    // drop their redirect rules and diverge from the build-time baselines.
-    const res = await dnrRulesetFromRawLists(lists, { env: ENV, extensionPaths: EXTENSION_PATHS });
+    // Same options and ext_ubol rewrites as the build (tools/lib/env.mjs), or
+    // recompiled lists would drop rules and diverge from the build-time baselines.
+    const res = await dnrRulesetFromRawLists(withUbolNetworkFilters(lists, ENV),
+        { env: ENV, extensionPaths: EXTENSION_PATHS });
     const emitted = res.network.ruleset || [];
     return {
         rules: emitted.filter(isRule),

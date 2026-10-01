@@ -9,6 +9,8 @@ import { resolve } from 'node:path';
 import { ROOT } from './lib/backup.mjs';
 import { checkRegex } from './lib/re2check.mjs';
 import { VALID_TOP_LEVEL } from './lib/sanitize.mjs';
+import { ENV } from './lib/env.mjs';
+import { ubolNetworkFilters } from '../src/lib/ubol-compat.js';
 
 const DIST = resolve(ROOT, 'extension');
 
@@ -415,6 +417,57 @@ function main() {
         }
         if ( twoByte === 0 ) {
             note(`page scripts: ${pageScripts.size} files, ${(chars / 1048576).toFixed(2)} M chars, all one-byte`);
+        }
+    }
+
+    // --- ext_ubol network rewrites (src/lib/ubol-compat.js) -----------------
+    // Fixture with known answers: only sections made purely of blocking network
+    // filters may be taken. Each skipped section is a negative control.
+    {
+        const fixture = [
+            '||common.example^',
+            '!#if ext_ubol',
+            '/^https:\\/\\/[a-z]{2}\\.[a-z]{7,14}\\.com\\/[rt][0-9A-Za-z]{10,16}\\/\\d{3,6}(?:\\?|$)/$script,3p,match-case',
+            '||stand-in.example^$script,redirect=noop.js',
+            '!#endif',
+            '!#if !ext_ubol',
+            '||mv2-only.example^',
+            '!#else',
+            '||else-branch.example^',
+            '!#endif',
+            '!#if ext_ubol', '||paired-block.example^', '@@||paired-allow.example^', '!#endif',
+            '!#if ext_ubol', '||x.example^$removeparam=utm_source', '!#endif',
+            '!#if ext_ubol', '||y.example^$csp=worker-src \'none\'', '!#endif',
+            '!#if ext_ubol', '||z.example^$badfilter', '!#endif',
+            '!#if ext_ubol', '||t.example^$xhr', '||u.example^$xhr,uritransform=/a/b/', '!#endif',
+            '!#if ext_ubol', '||cos-block.example^', 'example.com##.ad', '!#endif',
+            '!#if env_safari', '!#if ext_ubol', '||safari-only.example^', '!#endif', '!#endif',
+            '!#if ext_ubol', '||nested-outer.example^',
+            '!#if env_chromium', '@@||nested-allow.example^', '!#endif', '!#endif',
+            '!#if ext_ubol',
+            '||unterminated.example^',
+        ].join('\n');
+        const want = [
+            '/^https:\\/\\/[a-z]{2}\\.[a-z]{7,14}\\.com\\/[rt][0-9A-Za-z]{10,16}\\/\\d{3,6}(?:\\?|$)/$script,3p,match-case',
+            '||stand-in.example^$script,redirect=noop.js',
+            '||else-branch.example^',
+            '||unterminated.example^',
+        ];
+        const got = ubolNetworkFilters(fixture, ENV);
+        if ( JSON.stringify(got) !== JSON.stringify(want) ) {
+            fail(`ext_ubol selection fixture: expected ${JSON.stringify(want)}, got ${JSON.stringify(got)}`);
+        } else if ( ubolNetworkFilters(fixture, [ ...ENV, 'ubol' ]).length !== 0 ) {
+            fail('ext_ubol selection must be empty when the env already includes ubol');
+        } else {
+            note(`ext_ubol selection: fixture ok (${want.length} taken, 8 sections correctly skipped)`);
+        }
+        const fetchedFile = resolve(ROOT, 'build', 'lists.fetched.json');
+        if ( existsSync(fetchedFile) ) {
+            let taken = 0;
+            for ( const f of JSON.parse(readFileSync(fetchedFile, 'utf-8')) ) {
+                taken += ubolNetworkFilters(readFileSync(f.path, 'utf-8'), ENV).length;
+            }
+            note(`ext_ubol rewrites: ${taken} blocking filter(s) taken from the fetched lists`);
         }
     }
 

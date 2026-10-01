@@ -7,6 +7,7 @@ import { resolve } from 'node:path';
 import { ROOT, readBackup } from './lib/backup.mjs';
 import { dnrRulesetFromRawLists } from '@gorhill/ubo-core/js/static-dnr-filtering.js';
 import { DNR_OPTIONS } from './lib/env.mjs';
+import { withUbolNetworkFilters } from '../src/lib/ubol-compat.js';
 
 const BUILD = resolve(ROOT, 'build');
 
@@ -45,7 +46,7 @@ async function main() {
     console.log(`compiling ${lists.length} lists: ${(rawBytes / 1048576).toFixed(2)} MiB, ${rawLines.toLocaleString()} lines`);
 
     const t0 = Date.now();
-    const result = await dnrRulesetFromRawLists(lists, { ...DNR_OPTIONS });
+    const result = await dnrRulesetFromRawLists(withUbolNetworkFilters(lists, DNR_OPTIONS.env), { ...DNR_OPTIONS });
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
 
     // ubo-core returns real DNR rules and `_error` diagnostics in one array.

@@ -7,6 +7,7 @@ import { resolve } from 'node:path';
 import { ROOT, readBackup } from './lib/backup.mjs';
 import { dnrRulesetFromRawLists } from '@gorhill/ubo-core/js/static-dnr-filtering.js';
 import { DNR_OPTIONS } from './lib/env.mjs';
+import { withUbolNetworkFilters } from '../src/lib/ubol-compat.js';
 
 const BUILD = resolve(ROOT, 'build');
 
@@ -34,7 +35,7 @@ function classify(ruleset) {
 }
 
 async function compileOne(name, text) {
-    const result = await dnrRulesetFromRawLists([ { name, text } ], {
+    const result = await dnrRulesetFromRawLists(withUbolNetworkFilters([ { name, text } ], DNR_OPTIONS.env), {
         ...DNR_OPTIONS,
     });
     return classify(result.network.ruleset || []);

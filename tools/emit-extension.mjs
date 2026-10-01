@@ -20,6 +20,7 @@ import { filterValidRegexRules } from './lib/re2check.mjs';
 import { sanitizeRules } from './lib/sanitize.mjs';
 import { ruleHash } from './lib/rulehash.mjs';
 import { dnrRulesetFromRawLists } from '@gorhill/ubo-core/js/static-dnr-filtering.js';
+import { withUbolNetworkFilters } from '../src/lib/ubol-compat.js';
 
 const BUILD = resolve(ROOT, 'build');
 const DIST = resolve(ROOT, 'extension');
@@ -83,7 +84,7 @@ const droppedRegex = [];
 const strippedKeys = new Map();
 
 async function compile(lists) {
-    const res = await dnrRulesetFromRawLists(lists, { ...DNR_OPTIONS });
+    const res = await dnrRulesetFromRawLists(withUbolNetworkFilters(lists, DNR_OPTIONS.env), { ...DNR_OPTIONS });
     const emitted = res.network.ruleset || [];
     const { kept, dropped } = filterValidRegexRules(emitted.filter(isRule));
     for ( const d of dropped ) {

@@ -82,19 +82,29 @@ installing a newer release resets it. The dashboard warns well before that.
 
 Honest accounting, as measured on this build's lists.
 
-**2,167 filters (1.8%) cannot be expressed in MV3:**
+**2,181 filters (1.9%) cannot be expressed in MV3:**
 
 | Count | Reason |
 |---|---|
-| 576 | Rejected by uBO's DNR compiler: options with no DNR form, e.g. `$replace=` (rewriting response bodies) and `$urlskip=` |
-| 572 | Otherwise incompatible with declarativeNetRequest |
+| 581 | Rejected by uBO's DNR compiler: options with no DNR form, e.g. `$replace=` (rewriting response bodies) and `$urlskip=` |
+| 568 | Otherwise incompatible with declarativeNetRequest |
 | 413 | `domain=` entity wildcards (`example.*`) |
 | 253 | `removeparam`/`csp`/`permissions` exceptions, regex `removeparam`, `strict1p`/`strict3p` |
 | 150 | `ipaddress=`: DNR cannot match on IP addresses |
-| 118 | Regex filters RE2 cannot compile |
-| 61 | `header=` |
+| 119 | Regex filters RE2 cannot compile |
+| 74 | `header=` |
 | 15 | Redirect filters naming a resource uBO 1.75.0 does not ship (e.g. `didomi-loader`), or `redirect=none` |
-| 9 | Invalid filters |
+| 8 | Invalid filters |
+
+Where a list ships its own MV3 rewrite of such a filter, that rewrite is used.
+List maintainers put RE2-safe versions of lookaround regexes and similar in
+`!#if ext_ubol` sections for uBO Lite. Lists are otherwise resolved as uBO MV2
+resolves them, so this extension takes those sections for its network rules
+(`src/lib/ubol-compat.js`), but only sections that purely block. A section
+holding an exception, an in-page filter or a modifier is uBO Lite's stand-in
+for something this extension already does the MV2 way, so it is skipped. On
+this build that adds 54 filters. One of them is what blocks the pop-under
+script on yts.vg, whose MV2 filter uses a `(?=` lookahead.
 
 Redirect filters (`redirect=`, `redirect-rule=`) otherwise work, as in uBO Lite:
 matching requests are answered with uBO's own stand-ins (`noop.js`,
@@ -206,8 +216,12 @@ Each of these fails silently if broken, so each is checked mechanically:
    reject every script, disabling all scriptlets while the extension still looks
    healthy.
 7. **Shipped contents** — build-only data (scriptlet shards) and retired files
-   must not ship, and nothing is web-accessible, so pages cannot read or detect
-   the extension's files.
+   must not ship. Only the redirect stand-ins are web-accessible, behind
+   `use_dynamic_url`, so pages cannot probe for the extension's files.
+8. **`ext_ubol` selection** — the MV3 rewrites taken from lists must only add
+   blocking. A fixture with known answers checks that sections holding an
+   exception, a modifier, `badfilter`, an unparseable option or an in-page
+   filter are skipped whole.
 
 ---
 

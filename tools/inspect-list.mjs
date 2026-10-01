@@ -8,6 +8,7 @@ import { resolve } from 'node:path';
 import { ROOT } from './lib/backup.mjs';
 import { dnrRulesetFromRawLists } from '@gorhill/ubo-core/js/static-dnr-filtering.js';
 import { DNR_OPTIONS } from './lib/env.mjs';
+import { withUbolNetworkFilters } from '../src/lib/ubol-compat.js';
 
 const BUILD = resolve(ROOT, 'build');
 const fetched = JSON.parse(readFileSync(resolve(BUILD, 'lists.fetched.json'), 'utf-8'));
@@ -38,7 +39,7 @@ async function inspect(token) {
         console.log(`    | ${l.slice(0, 96)}`);
     }
 
-    const res = await dnrRulesetFromRawLists([ { name: token, text } ], DNR_OPTIONS);
+    const res = await dnrRulesetFromRawLists(withUbolNetworkFilters([ { name: token, text } ], DNR_OPTIONS.env), DNR_OPTIONS);
     const all = res.network.ruleset || [];
     const rules = all.filter(r => r._error === undefined);
     console.log(`  -> ${rules.length} DNR rule(s), ${all.length - rules.length} rejected`);
