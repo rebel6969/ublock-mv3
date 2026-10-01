@@ -70,7 +70,15 @@ may rewrite at runtime (30,000) far below the size of a full filter set:
 - **full** — the list is refetched and recompiled outright, as uBO does.
 - **patched** — the list ships as a fixed baseline Chrome will not let an
   extension rewrite, so only the *differences* are applied: new rules are added
-  and rules dropped upstream are switched off via `updateStaticRules`.
+  and rules dropped upstream are switched off via `updateStaticRules`. Regex
+  rules are the exception, because Chrome ignores `updateStaticRules` for them:
+  Chromium's `RulesetMatcher` passes disabled ids only to its URL-pattern
+  matcher, never to the regex matcher. So a patched list's regex rules (602 on
+  this build) are dynamic rules from the start, and each update replaces the
+  list's set outright.
+
+Chrome restores a release's own list of enabled static rulesets every time you
+install one, so lists you switched off are switched off again afterwards.
 
 Patching draws on a 6,000-rule reserve. Differences accumulate over months as
 lists drift from the baseline they were built against; when the reserve fills,
@@ -105,6 +113,17 @@ holding an exception, an in-page filter or a modifier is uBO Lite's stand-in
 for something this extension already does the MV2 way, so it is skipped. On
 this build that adds 54 filters. One of them is what blocks the pop-under
 script on yts.vg, whose MV2 filter uses a `(?=` lookahead.
+
+Popup filters (`$popup`, `$popunder` and the `no-popups` switch) work as in uBO.
+DNR cannot express "a tab another page opened", so ubo-core's DNR compiler drops
+them without an error. The service worker runs them instead, through uBO's own
+engine and following uBO's tab.js (`src/lib/popup-filters.js`). It closes a
+popup whose URL matches, and closes the opener when the opener turns out to be
+the ad. It spares a tab opened for a link you clicked yourself, and pages on
+whitelisted sites. That is 6,211 filters, which load in about 60 ms the first
+time a page opens a tab. One difference from uBO: `$all` filters (malware and
+phishing hosts) also apply to popups, but DNR already blocks those pages in any
+tab. So such a popup shows Chrome's blocked page instead of being closed.
 
 Redirect filters (`redirect=`, `redirect-rule=`) otherwise work, as in uBO Lite:
 matching requests are answered with uBO's own stand-ins (`noop.js`,
@@ -174,7 +193,9 @@ filter lists ──> @gorhill/ubo-core ──> declarativeNetRequest rules
 
 **Network rules.** Compiled by uBO's own engine, not a homegrown converter.
 Split between static rulesets (large lists, patched at runtime) and dynamic rules
-(everything else, replaced outright).
+(everything else, replaced outright). Static lists' regex rules are dynamic too,
+because Chrome cannot switch off a static regex rule. Popup filters run in the
+service worker on uBO's engine.
 
 **Cosmetic filters.** Site-specific filters (~29 MB) are sharded by hostname
 (FNV-1a, 64 shards) and served per page by the service worker; a page load
@@ -222,6 +243,12 @@ Each of these fails silently if broken, so each is checked mechanically:
    blocking. A fixture with known answers checks that sections holding an
    exception, a modifier, `badfilter`, an unparseable option or an in-page
    filter are skipped whole.
+9. **No regex in static rulesets** — Chrome cannot switch one off, so a regex
+   filter removed upstream would keep blocking until the next release.
+10. **Popup engine** — it shares module state with the DNR compiler, so loading it
+    must leave the compiler's output byte-identical. It is checked against known
+    answers from the shipped data: a listed host as a popup is closed, the same
+    URL as an ordinary request is not, and an unlisted host is not.
 
 ---
 

@@ -10,6 +10,9 @@ import { dnrRulesetFromRawLists } from '@gorhill/ubo-core/js/static-dnr-filterin
 import { ENV } from './lib/env-runtime.js';
 import { EXTENSION_PATHS } from './lib/redirect-paths.js';
 import { withUbolNetworkFilters } from './lib/ubol-compat.js';
+import {
+    popupEngineLines, loadPopupFilters, loadPublicSuffixList, matchPopup,
+} from './lib/popup-filters.js';
 import { SHARD_COUNT, shardOf, hostnameLadder } from './lib/shard.js';
 import {
     loadConfig, saveConfig, validateBackup, toBackup, backupFilename,
@@ -203,6 +206,11 @@ async function updateAllLists({ tokens = null } = {}) {
 
         await setCachedText(cache);
         await saveListState(state);
+        try {
+            await savePopupLinesFrom(Object.fromEntries(updated.map(t => [ t, cache[t] ])));
+        } catch ( reason ) {
+            failed.push({ token: '(popup filters)', error: reason.message });
+        }
 
         let install = null;
         let installError = null;
@@ -250,6 +258,7 @@ async function setListEnabled(token, enabled) {
     const state = await loadListState();
     state[token] = { ...(state[token] ?? {}), enabled };
     await saveListState(state);
+    invalidatePopupEngine();
 
     if ( entry.kind === 'static' ) {
         // Static lists are whole rulesets; toggling one is an enable/disable.
@@ -257,7 +266,9 @@ async function setListEnabled(token, enabled) {
             enabled ? { enableRulesetIds: [ entry.id ] }
                     : { disableRulesetIds: [ entry.id ] }
         );
-        return { kind: 'static', id: entry.id, enabled };
+        // Its regex rules are dynamic (see BAND.REGEX) and follow the toggle.
+        const regex = await rebuildStaticRegex();
+        return { kind: 'static', id: entry.id, enabled, regex };
     }
     const install = await rebuildDynamicLists();
     return { kind: 'dynamic', token, enabled, install };
@@ -287,6 +298,7 @@ async function addCustomList(url) {
 
     // Seed entry so rebuild picks it up.
     await addSeedEntry({ token: url, kind: 'url', title: url, urls: [ url ], rules: [] });
+    await savePopupLinesFrom({ [url]: text });
     const install = await rebuildDynamicLists();
     return { url, bytes: text.length, install };
 }
@@ -319,6 +331,7 @@ async function removeCustomList(url) {
     const config = await loadConfig();
     config.selectedFilterLists = config.selectedFilterLists.filter(t => t !== url);
     await saveConfig(config);
+    await savePopupLinesFrom({ [url]: null });
 
     const install = await rebuildDynamicLists();
     return { url, install };
@@ -504,7 +517,322 @@ async function reapplyUserFiltersNow() {
         .map(hostPattern);
     const status = await applyUserFilters(config, whitelistPatterns);
     userCosmeticCache = null;
+    // My filters may hold $popup filters too.
+    invalidatePopupEngine();
     return status;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Popup filtering ($popup / $popunder / no-popups)                           */
+
+// DNR cannot express these, so they run here through uBO's own engine (see
+// src/lib/popup-filters.js), following uBO 1.75.0's tab.js: a tab opened by a
+// page is a candidate for 10 s after its last navigation; its URL is tested in
+// the opener's context and the tab is closed on a match. When the opener then
+// navigates, the opener is tested as a popunder and closed on a match.
+const POPUP_LINES_KEY = 'popupLines';
+const DNR_COMPILE_OPTIONS = { env: ENV, extensionPaths: EXTENSION_PATHS };
+const popupEngine = { stale: true, loading: null, pslLoaded: false, filters: 0 };
+
+async function loadPopupLineUpdates() {
+    const got = await chrome.storage.local.get(POPUP_LINES_KEY);
+    const stored = got[POPUP_LINES_KEY];
+    // Same rule as static regex: a newer build ships newer lists.
+    if ( stored?.version !== chrome.runtime.getManifest().version ) { return {}; }
+    return stored.lists ?? {};
+}
+
+// Record the popup filters of lists just refetched: { token: text }.
+async function savePopupLinesFrom(texts) {
+    const lists = await loadPopupLineUpdates();
+    for ( const [ token, text ] of Object.entries(texts) ) {
+        if ( typeof text === 'string' ) {
+            lists[token] = await popupEngineLines(text, ENV, DNR_COMPILE_OPTIONS);
+        } else {
+            delete lists[token];
+        }
+    }
+    await chrome.storage.local.set({
+        [POPUP_LINES_KEY]: { version: chrome.runtime.getManifest().version, lists },
+    });
+    invalidatePopupEngine();
+}
+
+function invalidatePopupEngine() { popupEngine.stale = true; }
+
+// Loaded on the first popup after the worker starts, and after any change.
+async function ensurePopupEngine() {
+    if ( popupEngine.stale === false ) { return; }
+    if ( popupEngine.loading !== null ) { return popupEngine.loading; }
+    popupEngine.loading = (async () => {
+        // Cleared first: a change during the load marks it stale again.
+        popupEngine.stale = false;
+        if ( popupEngine.pslLoaded === false ) {
+            loadPublicSuffixList(await fetch(chrome.runtime.getURL('data/psl.json')).then(r => r.json()));
+            popupEngine.pslLoaded = true;
+        }
+        const [ shipped, updates, state, config ] = await Promise.all([
+            fetch(chrome.runtime.getURL('data/popup-filters.json')).then(r => r.json()),
+            loadPopupLineUpdates(), loadListState(), loadConfig(),
+        ]);
+        const byToken = new Map(shipped.map(e => [ e.token, e.lines ]));
+        for ( const [ token, lines ] of Object.entries(updates) ) { byToken.set(token, lines); }
+        const lists = [];
+        for ( const [ token, lines ] of byToken ) {
+            if ( state[token]?.enabled === false ) { continue; }
+            lists.push({ name: token, lines });
+        }
+        const userText = String(config.userFilters ?? '');
+        if ( userText.trim() !== '' ) {
+            lists.push({ name: 'user-filters', lines: await popupEngineLines(userText, ENV, DNR_COMPILE_OPTIONS) });
+        }
+        popupEngine.filters = loadPopupFilters(lists);
+    })().catch(reason => {
+        popupEngine.stale = true;
+        throw reason;
+    }).finally(() => { popupEngine.loading = null; });
+    return popupEngine.loading;
+}
+
+// uBO: "maybeGoodPopup" -- the link the user last pressed. A tab opened for
+// that URL is the user's own, not a popup.
+const maybeGoodPopup = { tabId: 0, url: '' };
+const popupCandidates = new Map();  // target tab id -> candidate
+const POPUP_CANDIDATE_TTL = 10000;
+
+const hostnameOf = url => { try { return new URL(url).hostname; } catch { return ''; } };
+
+// uBO's areDifferentURLs(): ignore the scheme, which the browser may change.
+function areDifferentURLs(a, b) {
+    if ( b === '' ) { return true; }
+    if ( b.startsWith('about:') ) { return false; }
+    let pos = a.indexOf('://');
+    if ( pos === -1 ) { return false; }
+    a = a.slice(pos);
+    pos = b.indexOf('://');
+    if ( pos !== -1 ) { b = b.slice(pos); }
+    return b !== a;
+}
+
+// uBO's net filtering switch: off for whitelisted sites (parent domain covers
+// subdomains, as in getStatus()).
+function filteringOff(config, url) {
+    const hostname = hostnameOf(url);
+    if ( hostname === '' ) { return false; }
+    const wl = new Set((config.whitelist ?? []).map(w => String(w).trim().toLowerCase()));
+    return wl.has(hostname) || hostnameLadder(hostname).some(h => wl.has(h));
+}
+
+// uBO's no-popups hostname switch: the most specific entry wins, then "*".
+function noPopupsSwitch(config, hostname) {
+    const entries = parseHostnameSwitches(config.hostnameSwitchesString).filter(sw => sw.name === 'no-popups');
+    if ( entries.length === 0 || hostname === '' ) { return false; }
+    for ( const h of [ hostname, ...hostnameLadder(hostname), '*' ] ) {
+        const sw = entries.find(e => e.hostname === h);
+        if ( sw !== undefined ) { return sw.state; }
+    }
+    return false;
+}
+
+function popupMatchOne(config, rootOpenerURL, localOpenerURL, targetURL, type) {
+    if ( filteringOff(config, targetURL) ) { return 0; }
+    if ( type === 'popup' && targetURL !== 'about:blank' && noPopupsSwitch(config, hostnameOf(rootOpenerURL)) ) {
+        return 1;
+    }
+    return matchPopup({ rootOpenerURL, localOpenerURL, targetURL, type });
+}
+
+async function testPopupCandidate(targetTabId, candidate) {
+    const { opener } = candidate;
+    const rootOpenerURL = opener.tabURL;
+    const targetURL = candidate.targetURL;
+    if ( rootOpenerURL === '' || targetURL === '' ) { return false; }
+    const config = await loadConfig();
+    // Popups are allowed where uBO is turned off in the opener's context.
+    if ( filteringOff(config, rootOpenerURL) ) { return false; }
+    await ensurePopupEngine();
+    const localOpenerURL = opener.frameId !== 0 && opener.frameURL !== 'about:blank'
+        ? opener.frameURL
+        : undefined;
+    let type = 'popup';
+    let result = 0;
+    if (
+        areDifferentURLs(targetURL, opener.trustedURL) &&
+        areDifferentURLs(targetURL, maybeGoodPopup.url)
+    ) {
+        result = popupMatchOne(config, rootOpenerURL, localOpenerURL, targetURL, 'popup');
+    }
+    if ( result === 0 && opener.popunder ) {
+        // uBO's popunderMatch(): the opener's URL in the popup's context.
+        result = popupMatchOne(config, targetURL, undefined, rootOpenerURL, 'popunder');
+        if ( result === 1 ) { type = 'popunder'; }
+    }
+    if ( result !== 1 ) { return false; }
+    const closeTabId = type === 'popup' ? targetTabId : opener.tabId;
+    await chrome.tabs.remove(closeTabId).catch(() => {});
+    console.log(`[uBlockMV3] closed ${type}`, type === 'popup' ? targetURL : rootOpenerURL);
+    return true;
+}
+
+async function popupCandidateTest(tabId) {
+    const now = Date.now();
+    for ( const [ targetTabId, candidate ] of popupCandidates ) {
+        if ( candidate.expires < now ) { popupCandidates.delete(targetTabId); continue; }
+        if ( tabId !== targetTabId && tabId !== candidate.opener.tabId ) { continue; }
+        // A navigation of the opener makes it a popunder candidate.
+        if ( tabId === candidate.opener.tabId ) { candidate.opener.popunder = true; }
+        let closed = false;
+        try {
+            closed = await testPopupCandidate(targetTabId, candidate);
+        } catch ( reason ) {
+            console.warn('[uBlockMV3] popup test failed', reason);
+        }
+        if ( closed ) {
+            popupCandidates.delete(targetTabId);
+        } else {
+            candidate.expires = Date.now() + POPUP_CANDIDATE_TTL;
+        }
+    }
+}
+
+chrome.webNavigation.onCreatedNavigationTarget.addListener(async details => {
+    const { sourceTabId, sourceFrameId, tabId, url } = details;
+    if ( popupCandidates.has(tabId) === false ) {
+        let frames;
+        try {
+            frames = await Promise.all([
+                chrome.webNavigation.getFrame({ tabId: sourceTabId, frameId: 0 }),
+                chrome.webNavigation.getFrame({ tabId: sourceTabId, frameId: sourceFrameId }),
+            ]);
+        } catch {
+            return;
+        }
+        if ( frames[1] === null || frames[1] === undefined ) { return; }
+        // uBO: a tab opened from about:newtab or a chrome: page is no popup.
+        if ( frames[1].url === 'about:newtab' || frames[1].url.startsWith('chrome:') ) { return; }
+        popupCandidates.set(tabId, {
+            targetURL: url ?? '',
+            expires: Date.now() + POPUP_CANDIDATE_TTL,
+            opener: {
+                tabId: sourceTabId,
+                tabURL: frames[0]?.url ?? frames[1].url,
+                frameId: sourceFrameId,
+                frameURL: frames[1].url,
+                popunder: false,
+                trustedURL: sourceTabId === maybeGoodPopup.tabId ? maybeGoodPopup.url : '',
+            },
+        });
+    }
+    popupCandidateTest(tabId);
+});
+
+// The popup's URL as soon as it navigates; the opener's once it commits.
+chrome.webNavigation.onBeforeNavigate.addListener(details => {
+    if ( details.frameId !== 0 ) { return; }
+    const candidate = popupCandidates.get(details.tabId);
+    if ( candidate === undefined ) { return; }
+    candidate.targetURL = details.url;
+    popupCandidateTest(details.tabId);
+});
+
+chrome.webNavigation.onCommitted.addListener(details => {
+    if ( details.frameId !== 0 ) { return; }
+    const target = popupCandidates.get(details.tabId);
+    if ( target !== undefined ) { target.targetURL = details.url; }
+    for ( const candidate of popupCandidates.values() ) {
+        if ( candidate.opener.tabId === details.tabId ) { candidate.opener.tabURL = details.url; }
+    }
+    popupCandidateTest(details.tabId);
+});
+
+chrome.tabs.onRemoved.addListener(tabId => {
+    for ( const [ targetTabId, candidate ] of popupCandidates ) {
+        if ( targetTabId === tabId || candidate.opener.tabId === tabId ) { popupCandidates.delete(targetTabId); }
+    }
+});
+
+/* ------------------------------------------------------------------------- */
+/* Regex rules of static lists                                                */
+
+// Chrome cannot switch off a static regex rule (see BAND.REGEX), so the regex
+// rules of static lists ship as data (rulesets/static-regex.json) and live in
+// the dynamic REGEX band, rebuilt wholesale from the enabled lists. A list's
+// set comes from its latest update when that update ran under this build, and
+// from the build otherwise.
+const STATIC_REGEX_KEY = 'staticRegex';
+
+async function loadStaticRegexSeed() {
+    return fetch(chrome.runtime.getURL('rulesets/static-regex.json')).then(r => r.json());
+}
+
+async function loadStaticRegexUpdates() {
+    const got = await chrome.storage.local.get(STATIC_REGEX_KEY);
+    const stored = got[STATIC_REGEX_KEY];
+    // A newer build ships newer lists; sets fetched under an older one are stale.
+    if ( stored?.version !== chrome.runtime.getManifest().version ) { return {}; }
+    return stored.lists ?? {};
+}
+
+async function saveStaticRegexUpdates(lists) {
+    await chrome.storage.local.set({
+        [STATIC_REGEX_KEY]: { version: chrome.runtime.getManifest().version, lists },
+    });
+}
+
+async function rebuildStaticRegex() {
+    const [ seed, updates, state ] = await Promise.all([
+        loadStaticRegexSeed(), loadStaticRegexUpdates(), loadListState(),
+    ]);
+    const bySeed = new Map(seed.map(e => [ e.token, e.rules ]));
+    const tokens = new Set([ ...bySeed.keys(), ...Object.keys(updates) ]);
+    let rules = [];
+    let lists = 0;
+    for ( const token of tokens ) {
+        if ( state[token]?.enabled === false ) { continue; }
+        const set = updates[token] ?? bySeed.get(token) ?? [];
+        if ( set.length === 0 ) { continue; }
+        rules = rules.concat(set);
+        lists += 1;
+    }
+    const result = await replaceBand(BAND.REGEX, rules);
+    return { ...result, lists };
+}
+
+// Chrome restores the manifest's set of enabled static rulesets on every
+// extension update ("not persisted across extension updates"), so a static list
+// the user switched off comes back on. Re-apply the stored choices.
+async function applyStaticListStates() {
+    const [ catalog, state, enabledNow ] = await Promise.all([
+        loadCatalog(), loadListState(), chrome.declarativeNetRequest.getEnabledRulesets(),
+    ]);
+    const enabled = new Set(enabledNow);
+    const enableRulesetIds = [];
+    const disableRulesetIds = [];
+    for ( const c of catalog ) {
+        if ( c.kind !== 'static' ) { continue; }
+        const want = state[c.token]?.enabled !== false;
+        if ( want && enabled.has(c.id) === false ) { enableRulesetIds.push(c.id); }
+        if ( want === false && enabled.has(c.id) ) { disableRulesetIds.push(c.id); }
+    }
+    if ( enableRulesetIds.length !== 0 || disableRulesetIds.length !== 0 ) {
+        await chrome.declarativeNetRequest.updateEnabledRulesets({ enableRulesetIds, disableRulesetIds });
+    }
+    return { enabled: enableRulesetIds.length, disabled: disableRulesetIds.length };
+}
+
+// Deltas are diffs against the baselines of the build that computed them. A new
+// build ships new baselines, and Chrome has already reset the rules they
+// switched off, so additions computed against the old ones must go too.
+const DELTA_BUILD_KEY = 'deltaBuild';
+
+async function dropDeltasFromOtherBuilds() {
+    const version = chrome.runtime.getManifest().version;
+    const got = await chrome.storage.local.get(DELTA_BUILD_KEY);
+    if ( got[DELTA_BUILD_KEY] === version ) { return false; }
+    await replaceBand(BAND.DELTA, []);
+    await saveDeltaState({});
+    await chrome.storage.local.set({ [DELTA_BUILD_KEY]: version });
+    return true;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -516,6 +844,10 @@ async function reapplyUserFiltersNow() {
 //   - updateStaticRules({ rulesetId, disableRuleIds }) switches off individual
 //     baseline rules that disappeared upstream
 //   - dynamic rules carry the additions
+//
+// Regex rules are the exception: Chrome ignores disableRuleIds for them, so they
+// are never in a static ruleset. A list's current regex set replaces its old one
+// in the REGEX band instead (see rebuildStaticRegex).
 //
 // Rotating whole lists through the dynamic band was the obvious alternative and
 // does not work: with ~113,000 static rules against a 30,000 budget, refreshing
@@ -551,15 +883,18 @@ async function updateStaticList(entry, deltaState) {
 
     const { text } = await fetchList(entry.urls);
     const { rules } = await compileToDNR([ { name: entry.token, text } ]);
+    const popup = await popupEngineLines(text, ENV, DNR_COMPILE_OPTIONS);
 
     // Chrome rejects the whole batch over one bad regex, and a static ruleset
     // will not load with one, so additions get the same treatment as any other
     // dynamic rule.
     const { kept } = await dropUnsupportedRegex(rules.map(sanitizeRule));
+    const regex = kept.filter(r => r.condition?.regexFilter !== undefined);
 
     const seen = new Set();
     const additions = [];
     for ( const rule of kept ) {
+        if ( rule.condition?.regexFilter !== undefined ) { continue; }
         const h = ruleHash(rule);
         seen.add(h);
         if ( baseline[h] === undefined ) { additions.push(rule); }
@@ -576,6 +911,8 @@ async function updateStaticList(entry, deltaState) {
         upstreamSize: kept.length,
         additions,
         disableRuleIds,
+        regex,
+        popup,
     };
 }
 
@@ -625,11 +962,31 @@ async function applyStaticDeltas(entries, report) {
         }
     }
 
+    // Each updated list's regex set replaces its previous one wholesale.
+    let regex = null;
+    if ( diffs.length !== 0 ) {
+        const popupLists = await loadPopupLineUpdates();
+        for ( const d of diffs ) { popupLists[d.token] = d.popup; }
+        await chrome.storage.local.set({
+            [POPUP_LINES_KEY]: { version: chrome.runtime.getManifest().version, lists: popupLists },
+        });
+        invalidatePopupEngine();
+        const updates = await loadStaticRegexUpdates();
+        for ( const d of diffs ) { updates[d.token] = d.regex; }
+        await saveStaticRegexUpdates(updates);
+        try {
+            regex = await rebuildStaticRegex();
+        } catch ( reason ) {
+            report.failed.push({ token: '(static regex)', error: reason.message });
+        }
+    }
+
     for ( const d of diffs ) {
         deltaState[d.token] = {
             lastUpdated: Date.now(),
             added: d.additions.length,
             disabled: d.disableRuleIds.length,
+            regex: d.regex.length,
             baselineSize: d.baselineSize,
             upstreamSize: d.upstreamSize,
         };
@@ -641,6 +998,7 @@ async function applyStaticDeltas(entries, report) {
         added: installed.length,
         overflow,
         disabled,
+        regex,
         reserve: BUDGET.DELTA_RESERVE,
         reserveUsedPct: Math.round((installed.length / BUDGET.DELTA_RESERVE) * 100),
         rebuildRecommended: overflow > 0 || installed.length > BUDGET.DELTA_RESERVE * 0.8,
@@ -827,6 +1185,7 @@ const SWITCH_SUPPORT = {
     'no-cosmetic-filtering': 'applied',
     'no-scripting': 'unsupported: MV3 cannot disable page JS per-site',
     'no-remote-fonts': 'applied',
+    'no-popups': 'applied',
 };
 
 async function applyHostnameSwitches(config) {
@@ -861,6 +1220,9 @@ async function applyHostnameSwitches(config) {
                 },
             });
             applied.push(sw);
+        } else if ( sw.name === 'no-popups' ) {
+            // Enforced when a page opens a tab (see noPopupsSwitch), not by DNR.
+            applied.push(sw);
         }
     }
 
@@ -887,6 +1249,7 @@ function reconcile() {
 async function reconcileOnce() {
     const config = await loadConfig();
     const results = { };
+    invalidatePopupEngine();
     try {
         results.whitelist = await applyWhitelist(config);
     } catch ( reason ) {
@@ -901,6 +1264,21 @@ async function reconcileOnce() {
         results.lists = await rebuildDynamicLists();
     } catch ( reason ) {
         results.listsError = reason.message;
+    }
+    try {
+        results.staticLists = await applyStaticListStates();
+    } catch ( reason ) {
+        results.staticListsError = reason.message;
+    }
+    try {
+        results.staleDeltasDropped = await dropDeltasFromOtherBuilds();
+    } catch ( reason ) {
+        results.deltasError = reason.message;
+    }
+    try {
+        results.staticRegex = await rebuildStaticRegex();
+    } catch ( reason ) {
+        results.staticRegexError = reason.message;
     }
     try {
         results.scriptlets = await registerScriptletScripts();
@@ -975,6 +1353,13 @@ const HANDLERS = {
     },
 
     async setSiteEnabled({ hostname, enabled }) { return setSiteEnabled(hostname, enabled); },
+
+    // content.js: the link the user just pressed (uBO's maybeGoodPopup).
+    async maybeGoodPopup({ url }, sender) {
+        maybeGoodPopup.tabId = sender?.tab?.id ?? 0;
+        maybeGoodPopup.url = typeof url === 'string' ? url : '';
+        return true;
+    },
 
     async getLists() {
         const [ catalog, state, extra, deltaState ] = await Promise.all([

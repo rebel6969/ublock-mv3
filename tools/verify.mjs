@@ -11,6 +11,12 @@ import { checkRegex } from './lib/re2check.mjs';
 import { VALID_TOP_LEVEL } from './lib/sanitize.mjs';
 import { ENV } from './lib/env.mjs';
 import { ubolNetworkFilters } from '../src/lib/ubol-compat.js';
+import { BUDGET } from '../src/lib/dynamic-rules.js';
+import { DNR_OPTIONS } from './lib/env.mjs';
+import { loadPopupFilters, loadPublicSuffixList, matchPopup } from '../src/lib/popup-filters.js';
+import { dnrRulesetFromRawLists } from '@gorhill/ubo-core/js/static-dnr-filtering.js';
+
+const DELTA_RESERVE = BUDGET.DELTA_RESERVE;
 
 const DIST = resolve(ROOT, 'extension');
 
@@ -121,7 +127,7 @@ function validateRule(rule, where, seenIds) {
     };
 }
 
-function main() {
+async function main() {
     console.log('VERIFY BUILT EXTENSION');
     console.log('='.repeat(70));
 
@@ -220,6 +226,32 @@ function main() {
     if ( staticTotal > LIMITS.GLOBAL_STATIC_RULE_LIMIT ) {
         fail(`${staticTotal} static rules > ${LIMITS.GLOBAL_STATIC_RULE_LIMIT}`);
     }
+    // Chrome cannot switch off a static regex rule (BAND.REGEX in
+    // src/lib/dynamic-rules.js), so a delta update could never retire one.
+    if ( staticRegex !== 0 ) {
+        fail(`${staticRegex} regex rule(s) in static rulesets -- they belong in rulesets/static-regex.json`);
+    }
+
+    // --- static lists' regex rules (dynamic REGEX band) --------------------
+    const staticRegexPath = resolve(DIST, 'rulesets', 'static-regex.json');
+    let regexBandTotal = 0, regexBandUnsafe = 0;
+    const actualStaticRegex = new Map();
+    if ( existsSync(staticRegexPath) === false ) {
+        fail('rulesets/static-regex.json missing');
+    } else {
+        for ( const list of JSON.parse(readFileSync(staticRegexPath, 'utf-8')) ) {
+            const seen = new Set();
+            for ( const rule of (list.rules ?? []) ) {
+                const r = validateRule({ ...rule, id: rule.id ?? 1 }, `static-regex ${list.token}`, seen);
+                if ( r === null ) { continue; }
+                if ( r.regex !== 1 ) { fail(`static-regex ${list.token}: non-regex rule ${rule.id}`); }
+                regexBandUnsafe += r.unsafe;
+            }
+            regexBandTotal += (list.rules ?? []).length;
+            actualStaticRegex.set(list.token, (list.rules ?? []).length);
+        }
+        note(`static lists' regex rules: ${regexBandTotal} across ${actualStaticRegex.size} lists, installed as dynamic rules`);
+    }
 
     // --- dynamic seed ------------------------------------------------------
     const seedPath = resolve(DIST, 'rulesets', 'dynamic-seed.json');
@@ -245,21 +277,26 @@ function main() {
     }
 
     const config = JSON.parse(readFileSync(resolve(DIST, 'data', 'default-config.json'), 'utf-8'));
-    const projected = dynTotal + config.whitelist.length;
-    if ( projected > LIMITS.MAX_NUMBER_OF_DYNAMIC_RULES ) {
-        fail(`projected dynamic rules ${projected} > ${LIMITS.MAX_NUMBER_OF_DYNAMIC_RULES}`);
+    // At install: lists + whitelist + static lists' regex. The delta reserve is
+    // added on top, because updates fill it later out of the same 30,000.
+    const projected = dynTotal + config.whitelist.length + regexBandTotal;
+    const withReserve = projected + DELTA_RESERVE;
+    if ( withReserve > LIMITS.MAX_NUMBER_OF_DYNAMIC_RULES ) {
+        fail(`projected dynamic rules ${projected} + delta reserve ${DELTA_RESERVE} > ${LIMITS.MAX_NUMBER_OF_DYNAMIC_RULES}`);
     }
-    if ( dynUnsafe > LIMITS.MAX_NUMBER_OF_UNSAFE_DYNAMIC_RULES ) {
-        fail(`unsafe dynamic rules ${dynUnsafe} > ${LIMITS.MAX_NUMBER_OF_UNSAFE_DYNAMIC_RULES}`);
+    if ( dynUnsafe + regexBandUnsafe > LIMITS.MAX_NUMBER_OF_UNSAFE_DYNAMIC_RULES ) {
+        fail(`unsafe dynamic rules ${dynUnsafe + regexBandUnsafe} > ${LIMITS.MAX_NUMBER_OF_UNSAFE_DYNAMIC_RULES}`);
     }
     note(`projected dynamic at install: ${projected.toLocaleString()} / ${LIMITS.MAX_NUMBER_OF_DYNAMIC_RULES} ` +
-        `(incl. ${config.whitelist.length} whitelist)`);
+        `(incl. ${config.whitelist.length} whitelist, ${regexBandTotal} static-list regex); ` +
+        `${withReserve.toLocaleString()} with the ${DELTA_RESERVE} delta reserve`);
 
-    const totalRegex = staticRegex + dynRegex;
-    if ( totalRegex > LIMITS.MAX_NUMBER_OF_REGEX_RULES ) {
-        fail(`regex rules ${totalRegex} > ${LIMITS.MAX_NUMBER_OF_REGEX_RULES} (static ${staticRegex} + dynamic ${dynRegex})`);
+    // Chrome evaluates the regex cap separately for dynamic and static rules.
+    const dynamicRegex = dynRegex + regexBandTotal;
+    if ( dynamicRegex > LIMITS.MAX_NUMBER_OF_REGEX_RULES ) {
+        fail(`dynamic regex rules ${dynamicRegex} > ${LIMITS.MAX_NUMBER_OF_REGEX_RULES} (lists ${dynRegex} + static-list regex ${regexBandTotal})`);
     }
-    note(`regex total: ${totalRegex} / ${LIMITS.MAX_NUMBER_OF_REGEX_RULES}`);
+    note(`regex: ${dynamicRegex} / ${LIMITS.MAX_NUMBER_OF_REGEX_RULES} dynamic, ${staticRegex} static`);
     note(`redirects: ${redirects.rules.toLocaleString()} rules to ${redirects.used.size} stand-ins, ` +
         `all declared (${redirects.declared.size} web-accessible files present)`);
 
@@ -373,7 +410,7 @@ function main() {
         let mismatches = 0;
         for ( const entry of catalog ) {
             const expected = entry.kind === 'static'
-                ? actualStatic.get(entry.id)
+                ? (actualStatic.has(entry.id) ? actualStatic.get(entry.id) + (actualStaticRegex.get(entry.token) ?? 0) : undefined)
                 : actualSeed.get(entry.token);
             if ( expected === undefined ) { continue; }
             if ( entry.rules !== expected ) {
@@ -471,6 +508,45 @@ function main() {
         }
     }
 
+    // --- popup filters (src/lib/popup-filters.js) ----------------------------
+    {
+        const popupPath = resolve(DIST, 'data', 'popup-filters.json');
+        const pslPath = resolve(DIST, 'data', 'psl.json');
+        if ( existsSync(popupPath) === false || existsSync(pslPath) === false ) {
+            fail('data/popup-filters.json or data/psl.json missing (popup filtering would be off)');
+        } else {
+            const lists = JSON.parse(readFileSync(popupPath, 'utf-8')).map(e => ({ name: e.token, lines: e.lines }));
+            // The engine is module state shared with the DNR compiler: loading it
+            // must leave the compiler's output untouched.
+            const probe = [ { name: 'probe', text: '||example.com^\n||ads.example^$script,3p\n/^https:\\/\\/[a-z]{3}\\.example\\//$xhr,3p' } ];
+            const dnrOut = async () => JSON.stringify((await dnrRulesetFromRawLists(probe, DNR_OPTIONS)).network.ruleset);
+            const before = await dnrOut();
+            loadPublicSuffixList(JSON.parse(readFileSync(pslPath, 'utf-8')));
+            const loaded = loadPopupFilters(lists);
+            if ( await dnrOut() !== before ) {
+                fail('loading the popup engine changed DNR compiler output');
+            }
+            // Known answers from the shipped data itself.
+            let host;
+            for ( const l of lists ) {
+                const line = l.lines.find(s => /^\|\|[a-z0-9.-]+\^\$popup$/.test(s));
+                if ( line ) { host = line.slice(2, line.indexOf('^')); break; }
+            }
+            const opener = 'https://opener.example/';
+            if ( host === undefined ) {
+                fail('popup-filters.json has no plain ||host^$popup filter to self-test with');
+            } else if ( matchPopup({ rootOpenerURL: opener, targetURL: `https://${host}/p` }) !== 1 ) {
+                fail(`popup engine does not block a popup to ${host}, which a shipped $popup filter names`);
+            } else if ( matchPopup({ rootOpenerURL: opener, targetURL: `https://${host}/p`, type: 'script' }) !== 0 ) {
+                fail('popup engine matched a non-popup request (popup filters must only apply to popups)');
+            } else if ( matchPopup({ rootOpenerURL: opener, targetURL: 'https://unlisted.invalid/' }) !== 0 ) {
+                fail('popup engine blocked an unlisted host');
+            } else {
+                note(`popup filters: ${loaded} loaded from ${lists.length} lists; self-test ok (${host}); DNR output unaffected`);
+            }
+        }
+    }
+
     // --- service worker bundle ---------------------------------------------
     const sw = resolve(DIST, 'background.js');
     const swSrc = readFileSync(sw, 'utf-8');
@@ -496,4 +572,7 @@ function report() {
     process.exitCode = 1;
 }
 
-main();
+main().catch(reason => {
+    console.error('VERIFY FAILED:', reason.stack ?? reason);
+    process.exitCode = 1;
+});

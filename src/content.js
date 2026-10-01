@@ -13,6 +13,20 @@
 // is ~23 KB and most frames never need it, so it is not declared here: the
 // worker injects it into this frame only when there are procedural filters.
 (() => {
+    // uBO's maybeGoodPopup (contentscript.js onMouseClick): a tab opened for
+    // the link the user just pressed is theirs, so popup filters spare it.
+    document.addEventListener('mousedown', ev => {
+        if ( ev.isTrusted === false ) { return; }
+        const elem = ev.target instanceof Element ? ev.target.closest('a[href]') : null;
+        if ( elem === null || typeof elem.href !== 'string' ) { return; }
+        // After an extension reload this frame's context is gone and
+        // sendMessage throws synchronously; that is not an error worth a report.
+        try {
+            chrome.runtime.sendMessage({ what: 'maybeGoodPopup', url: elem.href || '' }).catch(() => {});
+        } catch {
+        }
+    }, true);
+
     const hostname = location.hostname;
     if ( hostname === '' ) { return; }
 

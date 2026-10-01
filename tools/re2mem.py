@@ -67,6 +67,40 @@ def load_rulesets():
 
 
 SEED_PATH = os.path.join(DIST, 'rulesets', 'dynamic-seed.json')
+# Regex rules of static lists, installed as dynamic rules (see BAND.REGEX in
+# src/lib/dynamic-rules.js). Same shape as the seed: [{token, rules}].
+STATIC_REGEX_PATH = os.path.join(DIST, 'rulesets', 'static-regex.json')
+
+
+def prune_list_file(path):
+    """Prune a [{token, rules}] file in place; return the number removed."""
+    if not os.path.exists(path):
+        return 0
+    with open(path, encoding='utf-8') as fh:
+        entries = json.load(fh)
+    removed = 0
+    for entry in entries:
+        kept = []
+        for rule in entry.get('rules', []):
+            pattern = rule.get('condition', {}).get('regexFilter')
+            if pattern is not None:
+                cs = rule['condition'].get('isUrlFilterCaseSensitive', True)
+                if over_budget(pattern, cs) is not None:
+                    removed += 1
+                    continue
+            kept.append(rule)
+        entry['rules'] = kept
+    if removed:
+        with open(path, 'w', encoding='utf-8') as fh:
+            json.dump(entries, fh, separators=(',', ':'))
+    return removed
+
+
+def list_file_counts(path):
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding='utf-8') as fh:
+        return {entry['token']: len(entry.get('rules', [])) for entry in json.load(fh)}
 
 
 def prune():
@@ -98,24 +132,8 @@ def prune():
             per_file.append((label, removed, len(kept)))
             total_removed += removed
 
-    seed_removed = 0
-    if os.path.exists(SEED_PATH):
-        with open(SEED_PATH, encoding='utf-8') as fh:
-            seed = json.load(fh)
-        for entry in seed:
-            kept = []
-            for rule in entry.get('rules', []):
-                pattern = rule.get('condition', {}).get('regexFilter')
-                if pattern is not None:
-                    cs = rule['condition'].get('isUrlFilterCaseSensitive', True)
-                    if over_budget(pattern, cs) is not None:
-                        seed_removed += 1
-                        continue
-                kept.append(rule)
-            entry['rules'] = kept
-        if seed_removed:
-            with open(SEED_PATH, 'w', encoding='utf-8') as fh:
-                json.dump(seed, fh, separators=(',', ':'))
+    seed_removed = prune_list_file(SEED_PATH)
+    static_regex_removed = prune_list_file(STATIC_REGEX_PATH)
 
     # The list catalog is written before pruning, so its per-list rule counts are
     # stale by exactly what was removed here. The dashboard renders those numbers,
@@ -132,15 +150,15 @@ def prune():
         for label, path in ruleset_paths():
             with open(path, encoding='utf-8') as fh:
                 actual[label] = len(json.load(fh))
-        seed_counts = {}
-        if os.path.exists(SEED_PATH):
-            with open(SEED_PATH, encoding='utf-8') as fh:
-                for entry in json.load(fh):
-                    seed_counts[entry['token']] = len(entry.get('rules', []))
+        seed_counts = list_file_counts(SEED_PATH)
+        static_regex_counts = list_file_counts(STATIC_REGEX_PATH)
         for entry in catalog:
             if entry.get('kind') == 'static' and entry.get('id') in actual:
-                if entry.get('rules') != actual[entry['id']]:
-                    entry['rules'] = actual[entry['id']]
+                regex = static_regex_counts.get(entry.get('token'), 0)
+                total = actual[entry['id']] + regex
+                if entry.get('rules') != total or entry.get('regex') != regex:
+                    entry['rules'] = total
+                    entry['regex'] = regex
                     catalog_fixed += 1
             elif entry.get('token') in seed_counts:
                 if entry.get('rules') != seed_counts[entry['token']]:
@@ -155,15 +173,27 @@ def prune():
         print(f'  -{removed:<4} {label} ({remaining:,} rules remain)')
     print(f'\n  static rules removed: {total_removed}')
     print(f'  dynamic seed rules removed: {seed_removed}')
+    print(f'  static-list regex rules removed: {static_regex_removed}')
     print(f'  list-catalog.json entries corrected: {catalog_fixed}')
-    return total_removed + seed_removed
+    return total_removed + seed_removed + static_regex_removed
+
+
+def all_rule_sources():
+    """(label, rules) for every place the build ships rules: the static
+    rulesets, then each list in the dynamic seed and in static-regex.json."""
+    yield from load_rulesets()
+    for prefix, path in (('seed', SEED_PATH), ('static-regex', STATIC_REGEX_PATH)):
+        if os.path.exists(path):
+            with open(path, encoding='utf-8') as fh:
+                for entry in json.load(fh):
+                    yield f'{prefix}:{entry["token"]}', entry.get('rules', [])
 
 
 def scan():
-    """ruleset id -> {rule id: reason} for every over-budget pattern."""
+    """source label -> {rule id: reason} for every over-budget pattern."""
     result = {}
     total = 0
-    for name, rules in load_rulesets():
+    for name, rules in all_rule_sources():
         bad = {}
         for rule in rules:
             pattern = rule.get('condition', {}).get('regexFilter')
@@ -173,7 +203,7 @@ def scan():
             cs = rule['condition'].get('isUrlFilterCaseSensitive', True)
             reason = over_budget(pattern, cs)
             if reason is not None:
-                bad[rule['id']] = {'regexFilter': pattern, 'reason': reason}
+                bad[rule.get('id')] = {'regexFilter': pattern, 'reason': reason}
         if bad:
             result[name] = bad
     return result, total

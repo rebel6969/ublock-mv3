@@ -12,7 +12,7 @@
 //
 // The boundary is chosen to leave real headroom in both budgets rather than
 // filling them to the brim, so a list growing upstream does not break the build.
-import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, copyFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { ROOT, readBackup, describeConfig } from './lib/backup.mjs';
 import { DNR_OPTIONS } from './lib/env.mjs';
@@ -21,6 +21,7 @@ import { sanitizeRules } from './lib/sanitize.mjs';
 import { ruleHash } from './lib/rulehash.mjs';
 import { dnrRulesetFromRawLists } from '@gorhill/ubo-core/js/static-dnr-filtering.js';
 import { withUbolNetworkFilters } from '../src/lib/ubol-compat.js';
+import { popupEngineLines } from '../src/lib/popup-filters.js';
 
 const BUILD = resolve(ROOT, 'build');
 const DIST = resolve(ROOT, 'extension');
@@ -207,11 +208,18 @@ async function main() {
     const listCatalog = [];
     let totalStaticRules = 0;
     let totalStaticRegex = 0;
+    // Regex rules of static lists ship as data for the dynamic REGEX band, not
+    // in the ruleset: Chrome cannot switch off a static regex rule (see BAND.REGEX
+    // in src/lib/dynamic-rules.js), so one removed upstream would keep blocking.
+    const staticRegex = [];
 
     for ( const token of staticTokens ) {
         const text = textByToken.get(token);
         if ( text === undefined ) { throw new Error(`no text for static list ${token}`); }
-        const { rules } = await compile([ { name: token, text } ]);
+        const { rules: compiled } = await compile([ { name: token, text } ]);
+        const regexRules = compiled.filter(r => r.condition?.regexFilter !== undefined);
+        const rules = compiled.filter(r => r.condition?.regexFilter === undefined);
+        if ( regexRules.length !== 0 ) { staticRegex.push({ token, rules: regexRules }); }
         const numbered = renumber(rules);
         const s = statsOf(numbered);
         totalStaticRules += s.total;
@@ -229,14 +237,18 @@ async function main() {
         listCatalog.push({
             token, id, kind: 'static',
             title: metaByToken.get(token)?.title ?? token,
-            rules: s.total, regex: s.regex,
+            rules: s.total + regexRules.length, regex: regexRules.length,
             // Needed at runtime: a static list is refetched from these to diff
             // against its baseline, which is how it stays updatable despite
             // living in an immutable ruleset.
             urls: metaByToken.get(token)?.urls ?? [],
         });
-        console.log(`  [static]  ${String(s.total).padStart(6)} rules  ${token}`);
+        console.log(`  [static]  ${String(s.total).padStart(6)} rules  ${token}` +
+            (regexRules.length !== 0 ? ` (+${regexRules.length} regex, dynamic)` : ''));
     }
+    const staticRegexCount = staticRegex.reduce((n, l) => n + l.rules.length, 0);
+    writeFileSync(resolve(DIST, 'rulesets', 'static-regex.json'), JSON.stringify(staticRegex));
+    console.log(`  [regex]   ${staticRegexCount} regex rules of ${staticRegex.length} static lists -> REGEX band`);
 
     // --- emit dynamic seed ----------------------------------------------------
     // Shipped as data, installed into the dynamic ruleset by the service worker,
@@ -286,6 +298,22 @@ async function main() {
     }));
     writeFileSync(resolve(DIST, 'data', 'list-catalog.json'), JSON.stringify(listCatalog, null, 2));
 
+    // --- popup filters (src/lib/popup-filters.js) -----------------------------
+    // DNR cannot express $popup/$popunder; the service worker runs them through
+    // uBO's engine. Per list, so disabling a list disables its popup filters.
+    const popupData = [];
+    for ( const token of [ ...staticTokens, ...dynamicTokens ] ) {
+        const text = textByToken.get(token);
+        if ( text === undefined ) { continue; }
+        const lines = await popupEngineLines(text, DNR_OPTIONS.env, DNR_OPTIONS);
+        if ( lines.length !== 0 ) { popupData.push({ token, lines }); }
+    }
+    writeFileSync(resolve(DIST, 'data', 'popup-filters.json'), JSON.stringify(popupData));
+    // The engine needs the public suffix list for party and domain= matching.
+    copyFileSync(resolve(ROOT, 'node_modules/@gorhill/ubo-core/build/publicsuffixlist.json'),
+        resolve(DIST, 'data', 'psl.json'));
+    console.log(`  [popup]   ${popupData.reduce((n, l) => n + l.lines.length, 0)} popup filters from ${popupData.length} lists`);
+
     // --- report ---------------------------------------------------------------
     console.log();
     console.log('BUDGET CHECK');
@@ -300,8 +328,13 @@ async function main() {
     check('total static rules', totalStaticRules, LIMITS.GLOBAL_STATIC_RULE_LIMIT);
     check('dynamic rules (lists only)', dynamicRuleCount, LIMITS.MAX_NUMBER_OF_DYNAMIC_RULES);
     check('dynamic rules (+ whitelist)', dynamicRuleCount + backup.whitelist.length, LIMITS.MAX_NUMBER_OF_DYNAMIC_RULES);
-    check('regex rules (static + dynamic)',
-        totalStaticRegex + dynamicLists.reduce((n, l) => n + statsOf(l.rules).regex, 0),
+    check('dynamic (+ static regex + delta reserve)',
+        dynamicRuleCount + backup.whitelist.length + staticRegexCount + DELTA_RESERVE,
+        LIMITS.MAX_NUMBER_OF_DYNAMIC_RULES);
+    // Chrome evaluates the regex cap separately for static and dynamic rules.
+    check('regex rules in static rulesets', totalStaticRegex, 0);
+    check('regex rules (dynamic: lists + static regex)',
+        dynamicLists.reduce((n, l) => n + statsOf(l.rules).regex, 0) + staticRegexCount,
         LIMITS.MAX_NUMBER_OF_REGEX_RULES);
 
     if ( strippedKeys.size !== 0 ) {

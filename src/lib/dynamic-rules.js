@@ -15,6 +15,12 @@ export const BAND = {
     // Additions from updating a list that lives in a static ruleset. Kept in its
     // own band so rebuilding the list band never disturbs accumulated deltas.
     DELTA: { base: 3000000, size: 999999 },
+    // The regex rules of static lists. Chrome cannot switch off a static regex
+    // rule: RulesetMatcher::SetDisabledRuleIds only reaches the URL-pattern
+    // matcher, never the regex matcher (measured on Chrome 154, and so in
+    // Chromium main). A regex filter removed upstream would keep blocking, so
+    // static lists ship their regex rules here instead, rebuilt wholesale.
+    REGEX: { base: 4000000, size: 999999 },
 };
 
 // Budget split within the 30,000 dynamic-rule limit. Mirrors the constants in
@@ -144,6 +150,10 @@ export function auditBudget(rules) {
     }
     if ( unsafe > LIMITS.MAX_NUMBER_OF_UNSAFE_DYNAMIC_RULES ) {
         problems.push(`${unsafe} unsafe rules > ${LIMITS.MAX_NUMBER_OF_UNSAFE_DYNAMIC_RULES}`);
+    }
+    // Chrome counts dynamic regex rules separately from static ones.
+    if ( regex > LIMITS.MAX_NUMBER_OF_REGEX_RULES ) {
+        problems.push(`${regex} regex rules > ${LIMITS.MAX_NUMBER_OF_REGEX_RULES}`);
     }
     return { ok: problems.length === 0, problems, total: rules.length, unsafe, regex };
 }
