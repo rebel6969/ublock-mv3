@@ -111,6 +111,25 @@ const WAR_SITE = {
     to: "if ( scriptletGlobals.warOrigin === undefined ) { return warText(directive.slice(4)); }",
 };
 
+// Defects in vendored uBO scriptlets, patched here until upstream fixes them.
+// Each `from` must occur exactly once in the named scriptlet whenever it is
+// bundled, so an upstream change fails the build instead of silently dropping
+// or misapplying the fix. Retire an entry once upstream fixes the defect.
+const SCRIPTLET_FIXES = [
+    {
+        // uBO 1.75.0 through master (checked 2026-10-02): start() runs at
+        // 'interactive' and observes document.body, which is null in a document
+        // without one -- an SVG document in a frame, or a page that removed its
+        // body. That deferred call is outside the bundle's try/catch, so it
+        // throws "Failed to execute 'observe' on 'MutationObserver': parameter
+        // 1 is not of type 'Node'" (reported on app.trakt.tv). Observing the
+        // root instead sees every element body would have contained.
+        name: 'href-sanitizer.js',
+        from: 'observer.observe(document.body, {',
+        to: 'observer.observe(document.body || document.documentElement || document, {',
+    },
+];
+
 // Resource names a generateContentFn directive asks for: `war:name`, also as a
 // part of uBO's `join:<2-char separator><part><sep><part>...`.
 function collectWarNames(directive, out) {
@@ -319,6 +338,15 @@ function emitBundle(index, names, world, warUsed = new Map(), warNames = new Set
         const d = index.byName.get(name);
         parts.push(`/* ${name} */`);
         let src = d.fn.toString();
+        for ( const fix of SCRIPTLET_FIXES ) {
+            if ( fix.name !== name ) { continue; }
+            const n = src.split(fix.from).length - 1;
+            if ( n !== 1 ) {
+                throw new Error(`${world}: expected 1 occurrence of "${fix.from}" in vendored ` +
+                    `${name}, found ${n} -- upstream changed; update SCRIPTLET_FIXES`);
+            }
+            src = src.replace(fix.from, () => fix.to);
+        }
         if ( main ) {
             PASS_SITES.forEach((site, i) => {
                 const n = src.split(site.from).length - 1;
