@@ -130,6 +130,16 @@ async function main() {
     const secret = randomBytes(16).toString('hex');
     const isTrusted = name => name.startsWith('ublock-');
     const lists = fetched.map(f => ({ name: f.token, text: readFileSync(f.path, 'utf-8') }));
+    // config/my-overrides.txt: the owner's own filters for this build only
+    // (git-ignored, so never published). It exists for exceptions: My filters'
+    // `#@#` lines are not applied at runtime (src/lib/user-filters.js), so a
+    // list's cosmetic filter can only be cancelled here, where lists compile.
+    const overridesPath = resolve(ROOT, 'config', 'my-overrides.txt');
+    if ( existsSync(overridesPath) ) {
+        const text = readFileSync(overridesPath, 'utf-8');
+        lists.push({ name: 'my-overrides', text });
+        console.log(`local overrides: config/my-overrides.txt (${text.split('\n').filter(l => /^[^!\s]/.test(l)).length} filter lines)`);
+    }
     // User filters are NOT compiled here. The dashboard's "My filters" is their
     // source of truth, and the service worker compiles them at runtime (cosmetic
     // filters per page, scriptlets via chrome.userScripts). Baking them in meant

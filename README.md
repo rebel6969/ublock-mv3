@@ -168,6 +168,11 @@ npm run build:all
 > it uses one, and CI refuses to publish such a build. **Do not share a build
 > made from your own config.**
 
+To cancel a list's cosmetic filter for yourself only, put the uBO exception in
+`config/my-overrides.txt` (git-ignored), e.g. `www.youtube.com#@#.some-element`.
+My filters cannot do this: their `#@#` lines are not applied at runtime, so the
+exception has to be compiled in with the lists.
+
 Without a personal config the build uses `config/default.json`, which mirrors
 uBO's default list selection and contains no personal data.
 

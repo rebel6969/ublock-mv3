@@ -10,6 +10,7 @@ extension/
 # A uBlock Origin backup lists every site you have disabled blocking on, which is
 # a browsing history by another name, plus any personal filters you wrote.
 config/my-config.json
+config/my-overrides.txt
 my-ublock-backup_*.txt
 *.backup.txt
 
