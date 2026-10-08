@@ -14,6 +14,7 @@ import { ubolNetworkFilters } from '../src/lib/ubol-compat.js';
 import { BUDGET } from '../src/lib/dynamic-rules.js';
 import { DNR_OPTIONS } from './lib/env.mjs';
 import { loadPopupFilters, loadPublicSuffixList, matchPopup } from '../src/lib/popup-filters.js';
+import { planStaticDeltas, planProblems } from '../src/lib/delta-plan.js';
 import { dnrRulesetFromRawLists } from '@gorhill/ubo-core/js/static-dnr-filtering.js';
 
 const DELTA_RESERVE = BUDGET.DELTA_RESERVE;
@@ -544,6 +545,57 @@ async function main() {
             } else {
                 note(`popup filters: ${loaded} loaded from ${lists.length} lists; self-test ok (${host}); DNR output unaffected`);
             }
+        }
+    }
+
+    // --- static delta planner (src/lib/delta-plan.js) -------------------------
+    {
+        const rules = (n, type = 'block') => Array.from({ length: n }, () => ({ action: { type } }));
+        const ids = n => Array.from({ length: n }, (_, i) => i + 1);
+        const countUnsafe = rs => rs.filter(r => SAFE_ACTIONS.has(r.action.type) === false).length;
+        const limits = { additions: 6000, unsafe: 5, disabled: 5000 };
+        const diff = (token, adds, dis, type) => ({ token, rulesetId: token, additions: rules(adds, type), disableRuleIds: ids(dis) });
+        // The 2026-10-08 shape: a list with a huge diff ahead of small ones.
+        const diffs = [
+            diff('huge', 13831, 53),
+            diff('small', 14, 19),
+            diff('mid', 3900, 10),
+            diff('grow', 4500, 7),
+            diff('phish', 10, 5001),
+            diff('redir', 10, 0, 'redirect'),
+        ];
+        const applied = {
+            grow: { rulesetId: 'grow', additions: rules(300), disableRuleIds: ids(4) },
+            idle: { rulesetId: 'idle', additions: rules(20), disableRuleIds: ids(2) },
+        };
+        const { next, mode } = planStaticDeltas(diffs, applied, limits, countUnsafe);
+        const want = { huge: 'baseline', small: 'updated', mid: 'updated', grow: 'previous update', phish: 'baseline', redir: 'baseline', idle: 'previous update' };
+        const wrong = Object.keys(want).filter(t => mode[t] !== want[t]).map(t => `${t}=${mode[t]} (want ${want[t]})`);
+        const inPlan = Object.keys(next).sort().join(',');
+        const problemsNow = planProblems(next, diffs, applied, limits, countUnsafe);
+        // Negative control: the pre-1.0.12 updater switched off every list's
+        // removals but installed only the first 6,000 additions in list order.
+        let left = limits.additions;
+        const old = {};
+        for ( const d of diffs ) {
+            const take = Math.max(0, Math.min(left, d.additions.length));
+            left -= take;
+            old[d.token] = { rulesetId: d.rulesetId, additions: d.additions.slice(0, take), disableRuleIds: d.disableRuleIds };
+        }
+        const oldProblems = planProblems(old, diffs, {}, limits, countUnsafe);
+        const shrunk = planStaticDeltas([], applied, { additions: 10, unsafe: 5, disabled: 5000 }, countUnsafe);
+        if ( wrong.length !== 0 ) {
+            fail(`delta planner: ${wrong.join(', ')}`);
+        } else if ( inPlan !== 'grow,idle,mid,small' || next.grow !== applied.grow ) {
+            fail(`delta planner: plan holds ${inPlan}, want grow(previous),idle,mid,small`);
+        } else if ( problemsNow.length !== 0 ) {
+            fail(`delta planner: its own plan fails the invariant: ${problemsNow.join('; ')}`);
+        } else if ( oldProblems.some(p => p.startsWith('small:')) === false ) {
+            fail('delta planner invariant does not catch the pre-1.0.12 half-applied update (negative control)');
+        } else if ( shrunk.mode.idle !== 'baseline' || shrunk.next.idle !== undefined ) {
+            fail('delta planner keeps an update in force that no longer fits');
+        } else {
+            note(`static delta planner: whole-list updates, smallest first, quotas held; old half-applied plan flagged (${oldProblems.length} problems)`);
         }
     }
 

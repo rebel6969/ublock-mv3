@@ -171,16 +171,15 @@ $('updateAll').addEventListener('click', async () => {
         const parts = [ `${r.updated.length} lists refreshed` ];
         if ( r.deltas ) {
             const d = r.deltas;
-            parts.push(`${d.lists} large lists patched (+${d.added} new, ` +
-                `-${d.disabled.reduce((n, x) => n + x.count, 0)} stale)`);
-            if ( d.overflow > 0 ) {
-                parts.push(`${d.overflow} changes did not fit — rebuild to reclaim space`);
+            parts.push(`${d.updated} of ${d.lists} large lists patched (+${d.added} new, -${d.disabled} stale)`);
+            if ( d.notUpdated.length !== 0 ) {
+                parts.push(`not patched, too many changes: ${d.notUpdated.map(x => x.token).join(', ')} — rebuild to pick them up`);
             }
         }
         if ( r.failed.length !== 0 ) { parts.push(`${r.failed.length} failed`); }
         if ( r.installError ) { parts.push(`install error: ${r.installError}`); }
         const bad = r.failed.length !== 0 || Boolean(r.installError) ||
-            (r.deltas && r.deltas.overflow > 0);
+            (r.deltas && r.deltas.notUpdated.length !== 0);
         say($('msg'), parts.join(' · '), bad);
         await loadLists();
     } catch ( reason ) {

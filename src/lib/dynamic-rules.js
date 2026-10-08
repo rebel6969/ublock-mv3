@@ -31,11 +31,15 @@ export const BUDGET = {
     TOTAL: 30000,
 };
 
-// Verbatim from Chrome 152's declarativeNetRequest schema.
+// Verbatim from Chrome 152's declarativeNetRequest schema, except the last.
 export const LIMITS = {
     MAX_NUMBER_OF_DYNAMIC_RULES: 30000,
     MAX_NUMBER_OF_UNSAFE_DYNAMIC_RULES: 5000,
     MAX_NUMBER_OF_REGEX_RULES: 1000,
+    // Not exposed to extensions. Measured on Chrome 154: 5,000 switched-off
+    // static rules across ALL of an extension's rulesets; one more in any ruleset
+    // fails with "exceeds the disabled rule count limit".
+    MAX_NUMBER_OF_DISABLED_STATIC_RULES: 5000,
 };
 
 const SAFE_ACTIONS = new Set([ 'block', 'allow', 'allowAllRequests', 'upgradeScheme' ]);

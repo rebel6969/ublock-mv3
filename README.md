@@ -80,9 +80,17 @@ may rewrite at runtime (30,000) far below the size of a full filter set:
 Chrome restores a release's own list of enabled static rulesets every time you
 install one, so lists you switched off are switched off again afterwards.
 
-Patching draws on a 6,000-rule reserve. Differences accumulate over months as
-lists drift from the baseline they were built against; when the reserve fills,
-installing a newer release resets it. The dashboard warns well before that.
+Patching draws on a 6,000-rule reserve for new rules, and Chrome lets an
+extension switch off at most 5,000 static rules in total (measured on Chrome
+154). Each patched list is updated **whole or not at all**: its dropped rules are
+switched off only when all of its new rules fit, and lists are admitted
+smallest change first, so one list that changed a lot cannot crowd out the
+rest. A list whose changes do not fit keeps its previous update, or its
+baseline, and the dashboard names it; installing a newer release, which ships
+fresh baselines, picks those changes up. (Before 1.0.12 a list that did not fit
+still had its dropped rules switched off without its new ones, which weakened
+blocking: in October 2026 one malware list grew by 13,831 rules and every list
+after it, EasyList included, lost rules it still had.)
 
 ---
 

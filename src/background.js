@@ -18,10 +18,11 @@ import {
     loadConfig, saveConfig, validateBackup, toBackup, backupFilename,
 } from './lib/storage.js';
 import {
-    BAND, BUDGET, replaceBand, getDynamicRules, auditBudget, whitelistToRules,
-    dropUnsupportedRegex, sanitizeRule,
+    BAND, BUDGET, LIMITS, replaceBand, getDynamicRules, auditBudget, whitelistToRules,
+    dropUnsupportedRegex, sanitizeRule, inBand,
 } from './lib/dynamic-rules.js';
 import { ruleHash } from './lib/rulehash.js';
+import { planStaticDeltas } from './lib/delta-plan.js';
 import {
     applyUserFilters, userScriptsAvailable, USER_COSMETIC_KEY, USER_STATUS_KEY,
 } from './lib/user-filters.js';
@@ -266,9 +267,11 @@ async function setListEnabled(token, enabled) {
             enabled ? { enableRulesetIds: [ entry.id ] }
                     : { disableRulesetIds: [ entry.id ] }
         );
-        // Its regex rules are dynamic (see BAND.REGEX) and follow the toggle.
+        // Its regex rules and update additions are dynamic (see BAND.REGEX and
+        // BAND.DELTA) and follow the toggle.
         const regex = await rebuildStaticRegex();
-        return { kind: 'static', id: entry.id, enabled, regex };
+        const deltas = await reconcileStaticDeltas();
+        return { kind: 'static', id: entry.id, enabled, regex, deltas };
     }
     const install = await rebuildDynamicLists();
     return { kind: 'dynamic', token, enabled, install };
@@ -820,20 +823,10 @@ async function applyStaticListStates() {
     return { enabled: enableRulesetIds.length, disabled: disableRulesetIds.length };
 }
 
-// Deltas are diffs against the baselines of the build that computed them. A new
-// build ships new baselines, and Chrome has already reset the rules they
-// switched off, so additions computed against the old ones must go too.
+// Deltas are diffs against the baselines of the build that computed them; the
+// per-list update record (deltaState) is reset when the build changes. See
+// reconcileStaticDeltas().
 const DELTA_BUILD_KEY = 'deltaBuild';
-
-async function dropDeltasFromOtherBuilds() {
-    const version = chrome.runtime.getManifest().version;
-    const got = await chrome.storage.local.get(DELTA_BUILD_KEY);
-    if ( got[DELTA_BUILD_KEY] === version ) { return false; }
-    await replaceBand(BAND.DELTA, []);
-    await saveDeltaState({});
-    await chrome.storage.local.set({ [DELTA_BUILD_KEY]: version });
-    return true;
-}
 
 /* ------------------------------------------------------------------------- */
 /* Updating lists that live in static rulesets                                */
@@ -874,8 +867,9 @@ async function saveDeltaState(state) {
     await chrome.storage.local.set({ [DELTA_STATE_KEY]: state });
 }
 
-// Diff one static list against its baseline and apply the result.
-async function updateStaticList(entry, deltaState) {
+// Diff one static list against its baseline. applyStaticDeltas() decides
+// whether the diff is applied.
+async function updateStaticList(entry) {
     const baseline = await loadBaseline(entry.id);
     if ( baseline === null ) {
         throw new Error(`no baseline for "${entry.id}" -- rebuild required`);
@@ -916,51 +910,107 @@ async function updateStaticList(entry, deltaState) {
     };
 }
 
-// Apply the diffs for every static list, honouring the delta reserve.
+// The delta applied to each static list: which baseline rules are switched off
+// and which new rules stand in for them. Stored per list, so a list that is not
+// refreshed in a run (its fetch failed, or only other lists were asked for)
+// keeps its pair intact instead of keeping the switches-off without additions.
+const STATIC_DELTAS_KEY = 'staticDeltas';
+
+async function loadStaticDeltas() {
+    const got = await chrome.storage.local.get(STATIC_DELTAS_KEY);
+    const stored = got[STATIC_DELTAS_KEY];
+    // Deltas are diffs against this build's baselines.
+    if ( stored?.version !== chrome.runtime.getManifest().version ) { return {}; }
+    return stored.lists ?? {};
+}
+
+async function saveStaticDeltas(lists) {
+    await chrome.storage.local.set({
+        [STATIC_DELTAS_KEY]: { version: chrome.runtime.getManifest().version, lists },
+    });
+}
+
+// Make Chrome match `deltas` ({ token: { rulesetId, additions, disableRuleIds } }):
+// the enabled static lists' additions form the DELTA band, and each ruleset's
+// switched-off rules are exactly its list's removals (none for a list kept at
+// its baseline or switched off). Switches-off are lifted first and additions
+// installed before new ones apply, so no rule is ever off without its stand-in.
+async function applyStaticDeltaState(deltas, report) {
+    const [ catalog, state ] = await Promise.all([ loadCatalog(), loadListState() ]);
+    const additions = [];
+    const pendingDisable = [];
+    let enabledCount = 0;
+    for ( const c of catalog.filter(e => e.kind === 'static') ) {
+        const d = state[c.token]?.enabled !== false ? deltas[c.token] : undefined;
+        if ( d !== undefined ) { additions.push(...d.additions); }
+        const want = new Set(d?.disableRuleIds ?? []);
+        try {
+            const current = new Set(await chrome.declarativeNetRequest.getDisabledRuleIds({ rulesetId: c.id }));
+            const enableRuleIds = [ ...current ].filter(id => want.has(id) === false);
+            const disableRuleIds = [ ...want ].filter(id => current.has(id) === false);
+            if ( enableRuleIds.length !== 0 ) {
+                await chrome.declarativeNetRequest.updateStaticRules({ rulesetId: c.id, enableRuleIds });
+                enabledCount += enableRuleIds.length;
+            }
+            if ( disableRuleIds.length !== 0 ) { pendingDisable.push({ token: c.token, rulesetId: c.id, disableRuleIds }); }
+        } catch ( reason ) {
+            report.failed.push({ token: c.token, error: `static rule state: ${reason.message}` });
+        }
+    }
+    const band = await replaceBand(BAND.DELTA, additions);
+    let disabledCount = 0;
+    for ( const p of pendingDisable ) {
+        try {
+            await chrome.declarativeNetRequest.updateStaticRules({ rulesetId: p.rulesetId, disableRuleIds: p.disableRuleIds });
+            disabledCount += p.disableRuleIds.length;
+        } catch ( reason ) {
+            report.failed.push({ token: p.token, error: `disable failed (${p.disableRuleIds.length} rules): ${reason.message}` });
+        }
+    }
+    return { additions: additions.length, band, reEnabled: enabledCount, newlyDisabled: disabledCount };
+}
+
+// Apply the diffs for every static list, honouring the delta reserve and
+// Chrome's cap on switched-off static rules.
+//
+// A list is either UPDATED (its removed rules switched off and its new rules
+// installed) or left as it was, never half of each; planStaticDeltas() decides.
+// Switching off a list's removed rules while its replacements did not fit made
+// blocking weaker than the build: on 2026-10-08 urlhaus-1 had grown by 13,831
+// rules, filled the 6,000-rule reserve, and every list after it lost rules it
+// still had upstream (EasyList's rule for adsboosters.xyz among them).
 async function applyStaticDeltas(entries, report) {
-    const deltaState = await loadDeltaState();
+    const [ deltaState, applied ] = await Promise.all([ loadDeltaState(), loadStaticDeltas() ]);
     const diffs = [];
     for ( const entry of entries ) {
         try {
-            diffs.push(await updateStaticList(entry, deltaState));
+            diffs.push(await updateStaticList(entry));
         } catch ( reason ) {
             report.failed.push({ token: entry.token, error: reason.message });
         }
     }
 
-    // Additions share one reserve. If the diffs overflow it, apply what fits and
-    // say so plainly -- silently dropping half a list's new rules would leave the
-    // user believing they are protected by filters that were never installed.
-    const allAdditions = [];
-    for ( const d of diffs ) {
-        for ( const rule of d.additions ) { allAdditions.push({ rule, token: d.token }); }
-    }
-    let installed = allAdditions;
-    let overflow = 0;
-    if ( allAdditions.length > BUDGET.DELTA_RESERVE ) {
-        overflow = allAdditions.length - BUDGET.DELTA_RESERVE;
-        installed = allAdditions.slice(0, BUDGET.DELTA_RESERVE);
-    }
-    await replaceBand(BAND.DELTA, installed.map(x => x.rule));
-
-    // Disabling is per-ruleset and has its own quota; a failure there must not
-    // discard the additions that already applied.
-    const disabled = [];
-    for ( const d of diffs ) {
-        if ( d.disableRuleIds.length === 0 ) { continue; }
-        try {
-            await chrome.declarativeNetRequest.updateStaticRules({
-                rulesetId: d.rulesetId,
-                disableRuleIds: d.disableRuleIds,
-            });
-            disabled.push({ rulesetId: d.rulesetId, count: d.disableRuleIds.length });
-        } catch ( reason ) {
-            report.failed.push({
-                token: d.token,
-                error: `disable failed (${d.disableRuleIds.length} rules): ${reason.message}`,
-            });
-        }
-    }
+    // What the additions may use: the reserve, capped by what the other bands
+    // actually leave of Chrome's dynamic quotas (lists grow after a build).
+    const others = auditBudget((await getDynamicRules()).filter(r => inBand(r.id, BAND.DELTA) === false));
+    const { next, mode } = planStaticDeltas(diffs, applied, {
+        additions: Math.min(BUDGET.DELTA_RESERVE, LIMITS.MAX_NUMBER_OF_DYNAMIC_RULES - others.total),
+        unsafe: LIMITS.MAX_NUMBER_OF_UNSAFE_DYNAMIC_RULES - others.unsafe,
+        disabled: LIMITS.MAX_NUMBER_OF_DISABLED_STATIC_RULES,
+    }, rules => auditBudget(rules).unsafe);
+    // Stored only once Chrome holds it; a failed apply leaves the previous state
+    // as the one reconcile converges on.
+    const result = await applyStaticDeltaState(next, report);
+    await saveStaticDeltas(next);
+    // Not updated: a refreshed list whose diff did not fit, or a list not
+    // refreshed this run whose update in force no longer fits.
+    const byToken = new Map(diffs.map(d => [ d.token, d ]));
+    const notUpdated = Object.entries(mode)
+        .filter(([ token, m ]) => byToken.has(token) ? m !== 'updated' : m === 'baseline')
+        .map(([ token, m ]) => {
+            const d = byToken.get(token) ?? applied[token];
+            return { token, mode: m, additions: d.additions.length, removals: d.disableRuleIds.length };
+        });
 
     // Each updated list's regex set replaces its previous one wholesale.
     let regex = null;
@@ -981,9 +1031,13 @@ async function applyStaticDeltas(entries, report) {
         }
     }
 
+    // A list that was not updated keeps the time of its last real update.
+    const now = Date.now();
     for ( const d of diffs ) {
+        const updated = mode[d.token] === 'updated';
         deltaState[d.token] = {
-            lastUpdated: Date.now(),
+            lastUpdated: updated ? now : (deltaState[d.token]?.lastUpdated ?? null),
+            mode: mode[d.token],
             added: d.additions.length,
             disabled: d.disableRuleIds.length,
             regex: d.regex.length,
@@ -991,18 +1045,45 @@ async function applyStaticDeltas(entries, report) {
             upstreamSize: d.upstreamSize,
         };
     }
+    for ( const n of notUpdated ) {
+        if ( byToken.has(n.token) === false && deltaState[n.token] !== undefined ) {
+            deltaState[n.token] = { ...deltaState[n.token], mode: n.mode };
+        }
+    }
     await saveDeltaState(deltaState);
 
+    const reserved = Object.values(next).reduce((n, d) => n + d.additions.length, 0);
     return {
         lists: diffs.length,
-        added: installed.length,
-        overflow,
-        disabled,
+        updated: Object.values(mode).filter(m => m === 'updated').length,
+        notUpdated,
+        added: result.additions,
+        disabled: Object.values(next).reduce((n, d) => n + d.disableRuleIds.length, 0),
+        reEnabled: result.reEnabled,
         regex,
         reserve: BUDGET.DELTA_RESERVE,
-        reserveUsedPct: Math.round((installed.length / BUDGET.DELTA_RESERVE) * 100),
-        rebuildRecommended: overflow > 0 || installed.length > BUDGET.DELTA_RESERVE * 0.8,
+        reserveUsedPct: Math.round((reserved / BUDGET.DELTA_RESERVE) * 100),
+        rebuildRecommended: notUpdated.length !== 0 || reserved > BUDGET.DELTA_RESERVE * 0.8,
     };
+}
+
+// Converge Chrome on the stored static deltas. After an extension update the
+// stored deltas belong to the old build's baselines, so none apply: the DELTA
+// band empties and every switched-off rule comes back on. Chrome documents
+// resetting switched-off rules on update; this does not depend on it.
+async function reconcileStaticDeltas() {
+    const version = chrome.runtime.getManifest().version;
+    const got = await chrome.storage.local.get(DELTA_BUILD_KEY);
+    if ( got[DELTA_BUILD_KEY] !== version ) {
+        await saveDeltaState({});
+        await chrome.storage.local.set({ [DELTA_BUILD_KEY]: version });
+    }
+    const report = { failed: [] };
+    const result = await applyStaticDeltaState(await loadStaticDeltas(), report);
+    if ( report.failed.length !== 0 ) {
+        throw new Error(report.failed.map(f => `${f.token}: ${f.error}`).join('; '));
+    }
+    return result;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1271,9 +1352,9 @@ async function reconcileOnce() {
         results.staticListsError = reason.message;
     }
     try {
-        results.staleDeltasDropped = await dropDeltasFromOtherBuilds();
+        results.staticDeltas = await reconcileStaticDeltas();
     } catch ( reason ) {
-        results.deltasError = reason.message;
+        results.staticDeltasError = reason.message;
     }
     try {
         results.staticRegex = await rebuildStaticRegex();
@@ -1383,9 +1464,15 @@ const HANDLERS = {
                 lastUpdated: c.kind === 'static'
                     ? (delta?.lastUpdated ?? null)
                     : (state[c.token]?.lastUpdated ?? null),
-                lastError: state[c.token]?.lastError ?? null,
+                lastError: state[c.token]?.lastError ?? (
+                    delta?.mode !== undefined && delta.mode !== 'updated'
+                        ? `latest upstream changes (+${delta.added} / -${delta.disabled} rules) did not fit; ` +
+                          `${delta.mode === 'baseline' ? 'kept at the version this build shipped' : 'kept its previous update'}` +
+                          ' -- installing a newer build picks them up'
+                        : null
+                ),
                 delta: delta
-                    ? { added: delta.added, disabled: delta.disabled, upstream: delta.upstreamSize }
+                    ? { mode: delta.mode ?? null, added: delta.added, disabled: delta.disabled, upstream: delta.upstreamSize }
                     : null,
             };
         });
