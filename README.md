@@ -226,6 +226,16 @@ Lite's layout). An earlier design registered scripts scoped to each hostname —
 registered pattern in every renderer process: measured on 8 real sites that cost
 ~150 MB, growing with each open tab. Now: 2 registrations, 4 patterns.
 
+Some scriptlets act later than document_start: uBO's clipboard guard, on every
+site, installs its traps on the first mouse move, after the page's scripts have
+run. A page can redefine a global by then. Punjab National Bank's internet
+banking declares its own `function Map()`, which made the guard throw instead of
+installing. So the MAIN bundle captures `Map`, `WeakMap` and `Proxy` before any
+page script, and the shared trap helper uses only those (`NATIVE_CTORS` in
+`tools/emit-scriptlets.mjs`). The build tests it with a page-declared `Map`,
+including a control without the fix that has to fail. The few other upstream
+scriptlet defects patched the same way are listed in `SCRIPTLET_FIXES`.
+
 **My filters.** Compiled in the browser with uBO's engine whenever you save:
 network filters become dynamic rules, cosmetic filters join the per-page answer,
 and scriptlet filters are registered through `chrome.userScripts`.

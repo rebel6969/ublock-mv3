@@ -128,7 +128,27 @@ const SCRIPTLET_FIXES = [
         from: 'observer.observe(document.body, {',
         to: 'observer.observe(document.body || document.documentElement || document, {',
     },
+    // See NATIVE_CTORS: every constructor proxyApplyFn calls is the one the
+    // bundle captured at document_start.
+    { name: 'proxy-apply.fn', from: 'proxyApplyFn.isCtor = new Map();', to: 'proxyApplyFn.isCtor = new nativeMap();' },
+    { name: 'proxy-apply.fn', from: 'proxyApplyFn.proxies = new WeakMap();', to: 'proxyApplyFn.proxies = new nativeWeakMap();' },
+    { name: 'proxy-apply.fn', from: 'const proxiedToString = new Proxy(', to: 'const proxiedToString = new nativeProxy(' },
+    { name: 'proxy-apply.fn', from: 'const proxiedTarget = new Proxy(', to: 'const proxiedTarget = new nativeProxy(' },
 ];
+
+// Globals proxyApplyFn constructs from, bound in the MAIN bundle to the values
+// they had when it ran at document_start, before any page script.
+// proxyApplyFn builds its tables on its first call, and a scriptlet may make
+// that call late: prevent-clipboard-write (uBlock filters, every site) installs
+// its traps on the first mousemove. By then a page may have declared a global
+// of the same name: iretail.pnb.bank.in's scripts/common/NMap.js declares
+// `function Map()` with no has(), so the first mousemove threw
+// "proxyApplyFn.isCtor.has is not a function" and the guard never installed.
+// uBO 1.75.0 through master (1.75.1b11, checked 2026-10-14) have the same code.
+// Once the fixes above are applied, the build fails if proxyApplyFn still
+// constructs any of these from the page's globals (PAGE_CTOR_SITE).
+const NATIVE_CTORS = [ 'Map', 'WeakMap', 'Proxy' ];
+const PAGE_CTOR_SITE = new RegExp(`\\bnew\\s+(${NATIVE_CTORS.join('|')})\\b`);
 
 // Resource names a generateContentFn directive asks for: `war:name`, also as a
 // part of uBO's `join:<2-char separator><part><sep><part>...`.
@@ -330,6 +350,10 @@ function emitBundle(index, names, world, warUsed = new Map(), warNames = new Set
         parts.push('const passApply = PASS !== undefined ? PASS.apply : Reflect.apply;');
         parts.push('const passConstruct = PASS !== undefined ? PASS.construct : Reflect.construct;');
     }
+    if ( needed.has('proxy-apply.fn') ) {
+        parts.push('// Before any page script can redefine them; see NATIVE_CTORS in tools/emit-scriptlets.mjs.');
+        parts.push(`const ${NATIVE_CTORS.map(n => `native${n} = ${n}`).join(', ')};`);
+    }
 
     const siteCounts = PASS_SITES.map(( ) => 0);
     let warSiteCount = 0;
@@ -346,6 +370,10 @@ function emitBundle(index, names, world, warUsed = new Map(), warNames = new Set
                     `${name}, found ${n} -- upstream changed; update SCRIPTLET_FIXES`);
             }
             src = src.replace(fix.from, () => fix.to);
+        }
+        if ( name === 'proxy-apply.fn' && PAGE_CTOR_SITE.test(src) ) {
+            throw new Error(`${world}: vendored proxyApplyFn still constructs "${PAGE_CTOR_SITE.exec(src)[0]}" ` +
+                'from a page-replaceable global -- upstream changed; add it to SCRIPTLET_FIXES (see NATIVE_CTORS)');
         }
         if ( main ) {
             PASS_SITES.forEach((site, i) => {
