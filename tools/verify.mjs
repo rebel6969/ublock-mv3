@@ -136,12 +136,15 @@ function validateRule(rule, where, seenIds) {
 // Returns what happened, so a caller can also run it on a broken bundle.
 function lateTrapsUnderPageMap(src) {
     // Request, EventTarget and fetch are host globals, not realm intrinsics;
-    // safeSelf() reads them at its first call. The page objects are built
-    // inside the realm: proxyApplyFn walks its target path with
-    // `instanceof Object`, which an object from another realm fails.
+    // safeSelf() reads them at its first call. Node has no XMLHttpRequest, and
+    // since uBO 1.75.2 safeSelf() also binds its open and send, so the realm
+    // gets a stand-in. The page objects are built inside the realm:
+    // proxyApplyFn walks its target path with `instanceof Object`, which an
+    // object from another realm fails.
     const ctx = vm.createContext({ console, Request, EventTarget, fetch });
     vm.runInContext(`
         globalThis.self = globalThis;
+        globalThis.XMLHttpRequest = class XMLHttpRequest { open() { } send() { } };
         globalThis.location = { hostname: 'bank.example' };
         globalThis.__t = { listeners: [], execCalls: 0, selection: '' };
         globalThis.navigator = { clipboard: { writeText: async function writeText() { } } };
