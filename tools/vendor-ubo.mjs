@@ -16,7 +16,7 @@ import { resolve } from 'node:path';
 import { ROOT } from './lib/backup.mjs';
 
 // Pin to a tag, not a branch: a moving branch would make builds irreproducible.
-const UBO_REF = process.env.UBO_REF ?? '1.75.2';
+const UBO_REF = process.env.UBO_REF ?? '1.75.4';
 const REPO = 'gorhill/uBlock';
 
 const API = `https://api.github.com/repos/${REPO}/contents`;
@@ -52,14 +52,23 @@ async function fetchFile(path) {
 }
 
 // Byte-exact: resources include images and media, which res.text() corrupts.
-async function fetchBinaryInto(paths, outDir, label) {
+// A path in `empty` is written as a 0-byte file without a fetch: the listing
+// already gives its size, and raw.githubusercontent.com has answered 501 for a
+// 0-byte file ("First fragment: no Content-Length", from one Fastly cache node,
+// 2026-11-03) while serving every other file from the same ref.
+async function fetchBinaryInto(paths, outDir, label, empty = new Set()) {
     mkdirSync(outDir, { recursive: true });
     let bytes = 0;
     for ( const p of paths ) {
+        const out = resolve(outDir, p.split('/').pop());
+        if ( empty.has(p) ) {
+            writeFileSync(out, Buffer.alloc(0));
+            continue;
+        }
         const res = await fetch(`${RAW}/${p}`, { headers });
         if ( res.ok === false ) { throw new Error(`HTTP ${res.status} for ${p}`); }
         const buf = Buffer.from(await res.arrayBuffer());
-        writeFileSync(resolve(outDir, p.split('/').pop()), buf);
+        writeFileSync(out, buf);
         bytes += buf.length;
     }
     console.log(`  ${label}: ${paths.length} files, ${(bytes / 1024).toFixed(0)} KiB`);
@@ -99,11 +108,16 @@ async function main() {
     // also name XML, JSON and image resources (noop-vast4.xml, noop.json, ...).
     // The file list is recorded so the build can tell a stale vendor folder
     // from a filter naming a resource uBO itself does not have.
-    const warNames = (await listDir('src/web_accessible_resources'))
-        .filter(e => e.type === 'file')
-        .map(e => e.name);
+    const warEntries = (await listDir('src/web_accessible_resources'))
+        .filter(e => e.type === 'file');
+    const warNames = warEntries.map(e => e.name);
     const warDir = resolve(vendor, 'ubo-war');
-    await fetchBinaryInto(warNames.map(n => `src/web_accessible_resources/${n}`), warDir, 'redirect resources');
+    await fetchBinaryInto(
+        warNames.map(n => `src/web_accessible_resources/${n}`),
+        warDir,
+        'redirect resources',
+        new Set(warEntries.filter(e => e.size === 0).map(e => `src/web_accessible_resources/${e.name}`))
+    );
     writeFileSync(resolve(warDir, '.files.json'), JSON.stringify(warNames));
 
     // Icons. Fetched rather than read from a sibling uBlock0.chromium folder,
