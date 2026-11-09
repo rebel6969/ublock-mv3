@@ -16,7 +16,7 @@ import { resolve } from 'node:path';
 import { ROOT } from './lib/backup.mjs';
 
 // Pin to a tag, not a branch: a moving branch would make builds irreproducible.
-const UBO_REF = process.env.UBO_REF ?? '1.75.4';
+const UBO_REF = process.env.UBO_REF ?? '1.76.0';
 const REPO = 'gorhill/uBlock';
 
 const API = `https://api.github.com/repos/${REPO}/contents`;

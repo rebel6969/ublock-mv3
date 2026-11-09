@@ -109,7 +109,7 @@ Honest accounting, as measured on this build's lists.
 | 150 | `ipaddress=`: DNR cannot match on IP addresses |
 | 119 | Regex filters RE2 cannot compile |
 | 74 | `header=` |
-| 15 | Redirect filters naming a resource uBO 1.75.4 does not ship (e.g. `didomi-loader`), or `redirect=none` |
+| 15 | Redirect filters naming a resource uBO 1.76.0 does not ship (e.g. `didomi-loader`), or `redirect=none` |
 | 8 | Invalid filters |
 
 Where a list ships its own MV3 rewrite of such a filter, that rewrite is used.

@@ -41,8 +41,8 @@ const WAR = resolve(ROOT, 'vendor', 'ubo-war');
 const PROVIDED_GLOBALS = new Map([
     // Empty object: no logger channel (bcSecret, logLevel) and no hosted
     // web-accessible resources (warOrigin, warSecret). safeSelf() then skips
-    // logger setup, and `war:` directives resolve to empty content -- uBO's own
-    // behaviour whenever warOrigin is unset.
+    // logger setup. `war:` directives are resolved by WAR_SITE below; uBO 1.76
+    // itself resolves every one to empty content.
     [ 'scriptletGlobals', 'const scriptletGlobals = {};' ],
 ]);
 
@@ -104,11 +104,13 @@ const PASS_SITES = [
 // Every byte of this bundle is compiled in every frame of every page: measured
 // cold, adding the two larger scripts (gpt 5.1 KB, adsbygoogle 4.2 KB, used on
 // ~10 niche hosts) cost +0.59 ms (+20%) per frame, so those resolve to '' --
-// uBO's own result whenever warOrigin is unset -- and the build lists them.
+// uBO's own result for every `war:` directive since 1.76.0, which dropped the
+// XHR ("Prevent war:-related filters for the time being") -- and the build
+// lists them.
 const WAR_INLINE_MAX = 256; // bytes of text
 const WAR_SITE = {
-    from: "if ( scriptletGlobals.warOrigin === undefined ) { return ''; }",
-    to: "if ( scriptletGlobals.warOrigin === undefined ) { return warText(directive.slice(4)); }",
+    from: "// TODO: resources should be fetched by messaging ISOLATED world\n        return '';",
+    to: "// TODO: resources should be fetched by messaging ISOLATED world\n        return warText(directive.slice(4));",
 };
 
 // Defects in vendored uBO scriptlets, patched here until upstream fixes them.
@@ -870,7 +872,7 @@ async function main() {
             console.log(`  war: ${warNames.size} resources named -- ` +
                 `${s.reused.length} reuse a bundled function (${s.reused.join(', ') || '-'}), ` +
                 `${s.literals.length} inlined (${s.literals.join(', ') || '-'}), ` +
-                `${s.tooLarge.length} over ${WAR_INLINE_MAX} B left unresolved as uBO does without warOrigin ` +
+                `${s.tooLarge.length} over ${WAR_INLINE_MAX} B left empty, as uBO 1.76 leaves every one ` +
                 `(${s.tooLarge.join(', ') || '-'})` +
                 (s.notInUbo.length ? `, ${s.notInUbo.length} not shipped by uBO (resolve to '', as in uBO): ${s.notInUbo.join(', ')}` : ''));
         }

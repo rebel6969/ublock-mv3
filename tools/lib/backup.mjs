@@ -56,6 +56,16 @@ export function resolveConfigPath() {
 // Kept for compatibility with tools that imported the old constant.
 export const BACKUP_PATH = resolveConfigPath().path;
 
+// uBO 1.76 writes "My filters" as an array of lines; earlier versions wrote one
+// string. Both become the text uBO's own restore produces (lines joined by \n).
+export function userFiltersText(value, where) {
+    if ( typeof value === 'string' ) { return value; }
+    if ( Array.isArray(value) && value.every(line => typeof line === 'string') ) {
+        return value.join('\n');
+    }
+    throw new Error(`config key "userFilters" is neither text nor a list of lines: ${where}`);
+}
+
 export function readBackup(path) {
     const chosen = path !== undefined
         ? { path, source: path, personal: true }
@@ -73,6 +83,7 @@ export function readBackup(path) {
             throw new Error(`config is missing required key "${key}": ${chosen.path}`);
         }
     }
+    data.userFilters = userFiltersText(data.userFilters, chosen.path);
     data.__source = chosen.source;
     data.__personal = chosen.personal;
     return data;

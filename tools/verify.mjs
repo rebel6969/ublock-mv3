@@ -7,7 +7,7 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import vm from 'node:vm';
-import { ROOT } from './lib/backup.mjs';
+import { ROOT, userFiltersText } from './lib/backup.mjs';
 import { checkRegex } from './lib/re2check.mjs';
 import { VALID_TOP_LEVEL } from './lib/sanitize.mjs';
 import { ENV } from './lib/env.mjs';
@@ -674,6 +674,28 @@ async function main() {
             fail('delta planner keeps an update in force that no longer fits');
         } else {
             note(`static delta planner: whole-list updates, smallest first, quotas held; old half-applied plan flagged (${oldProblems.length} problems)`);
+        }
+    }
+
+    // --- "My filters" in a backup: uBO 1.76 writes lines, older versions text --
+    {
+        const lines = [ '! mine', 'example.com##.ad', '' ];
+        const asText = lines.join('\n');
+        let refused = false;
+        try { userFiltersText({ a: 1 }, 'self-test'); } catch { refused = true; }
+        // Negative control: the pre-1.76 readers called .split on the value.
+        let oldThrew = false;
+        try { lines.split('\n'); } catch { oldThrew = true; }
+        if ( userFiltersText(lines, 'self-test') !== asText ) {
+            fail('backup userFilters: a 1.76 array is not joined back into the text uBO restores');
+        } else if ( userFiltersText(asText, 'self-test') !== asText ) {
+            fail('backup userFilters: a pre-1.76 string is changed');
+        } else if ( refused === false ) {
+            fail('backup userFilters: a value that is neither text nor lines is accepted');
+        } else if ( oldThrew === false ) {
+            fail('backup userFilters negative control: string-only code did not fail on a 1.76 array');
+        } else {
+            note('backup userFilters: 1.76 line arrays and older text both read; other shapes refused; old reader fails on 1.76');
         }
     }
 
