@@ -10,6 +10,7 @@ and scriptlet implementations, so you keep as much of uBO's behaviour as MV3
 permits.
 
 Derived from [uBlock Origin](https://github.com/gorhill/uBlock) by Raymond Hill.
+Scriptlets and redirect resources are pinned to uBlock Origin 1.76.2.
 GPL-3.0-or-later.
 
 ---
@@ -50,6 +51,9 @@ uBO's own format, so backups move in both directions.
 ---
 
 ## What it does
+
+Counts below describe a measured filter-list snapshot; refreshing lists or changing
+the selection changes the totals.
 
 | | |
 |---|---|
@@ -96,7 +100,7 @@ after it, EasyList included, lost rules it still had.)
 
 ## What MV3 costs you
 
-Honest accounting, as measured on this build's lists.
+Honest accounting, as measured on that list snapshot.
 
 **2,181 filters (1.9%) cannot be expressed in MV3:**
 
@@ -109,7 +113,7 @@ Honest accounting, as measured on this build's lists.
 | 150 | `ipaddress=`: DNR cannot match on IP addresses |
 | 119 | Regex filters RE2 cannot compile |
 | 74 | `header=` |
-| 15 | Redirect filters naming a resource uBO 1.76.0 does not ship (e.g. `didomi-loader`), or `redirect=none` |
+| 15 | Redirect filters naming a resource uBO 1.76.2 does not ship (e.g. `didomi-loader`), or `redirect=none` |
 | 8 | Invalid filters |
 
 Where a list ships its own MV3 rewrite of such a filter, that rewrite is used.
