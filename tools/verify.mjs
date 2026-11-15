@@ -17,6 +17,7 @@ import { DNR_OPTIONS } from './lib/env.mjs';
 import { loadPopupFilters, loadPublicSuffixList, matchPopup } from '../src/lib/popup-filters.js';
 import { planStaticDeltas, planProblems } from '../src/lib/delta-plan.js';
 import { dnrRulesetFromRawLists } from '@gorhill/ubo-core/js/static-dnr-filtering.js';
+import { AstFilterParser } from '@gorhill/ubo-core/js/static-filtering-parser.js';
 
 const DELTA_RESERVE = BUDGET.DELTA_RESERVE;
 
@@ -674,6 +675,29 @@ async function main() {
             fail('delta planner keeps an update in force that no longer fits');
         } else {
             note(`static delta planner: whole-list updates, smallest first, quotas held; old half-applied plan flagged (${oldProblems.length} problems)`);
+        }
+    }
+
+    // --- uBO 1.76.4: a non-leading type selector needs a combinator ----------
+    {
+        const parser = new AstFilterParser();
+        const valid = [ 'span.ad', '.ad span', '.ad > span', 'span + div', 'div:not(.paid) > span' ];
+        // The unpatched npm core accepted all three, including silently turning
+        // the last into the unrelated class selector ".adspan".
+        const invalid = [ '[data-ad]div', 'div:not(.paid)span', '.ad/**/span' ];
+        const wrong = [];
+        for ( const [ selectors, expected ] of [ [ valid, true ], [ invalid, false ] ] ) {
+            for ( const selector of selectors ) {
+                const out = {};
+                if ( parser.selectorCompiler.compile(selector, out) !== expected ) {
+                    wrong.push(`${JSON.stringify(selector)} should ${expected ? 'compile' : 'be rejected'}`);
+                }
+            }
+        }
+        if ( wrong.length !== 0 ) {
+            fail(`cosmetic selector guard: ${wrong.join('; ')}`);
+        } else {
+            note(`cosmetic selector guard: ${valid.length} valid selectors compile, ${invalid.length} invalid non-leading types rejected`);
         }
     }
 

@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Manifest V3 content blocker for Chrome, built on uBlock Origin's static filtering engine compiled to declarativeNetRequest.",
   "scripts": {
+    "postinstall": "node tools/patch-ubo-core.mjs",
     "resolve": "node tools/resolve-lists.mjs",
     "fetch": "node tools/fetch-lists.mjs",
     "compile": "node --max-old-space-size=8192 tools/build-rulesets.mjs",

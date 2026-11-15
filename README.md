@@ -10,7 +10,7 @@ and scriptlet implementations, so you keep as much of uBO's behaviour as MV3
 permits.
 
 Derived from [uBlock Origin](https://github.com/gorhill/uBlock) by Raymond Hill.
-Scriptlets and redirect resources are pinned to uBlock Origin 1.76.2.
+Scriptlets and redirect resources are pinned to uBlock Origin 1.76.4.
 GPL-3.0-or-later.
 
 ---
@@ -113,7 +113,7 @@ Honest accounting, as measured on that list snapshot.
 | 150 | `ipaddress=`: DNR cannot match on IP addresses |
 | 119 | Regex filters RE2 cannot compile |
 | 74 | `header=` |
-| 15 | Redirect filters naming a resource uBO 1.76.2 does not ship (e.g. `didomi-loader`), or `redirect=none` |
+| 15 | Redirect filters naming a resource uBO 1.76.4 does not ship (e.g. `didomi-loader`), or `redirect=none` |
 | 8 | Invalid filters |
 
 Where a list ships its own MV3 rewrite of such a filter, that rewrite is used.
@@ -188,10 +188,17 @@ exception has to be compiled in with the lists.
 Without a personal config the build uses `config/default.json`, which mirrors
 uBO's default list selection and contains no personal data.
 
+`npm install` and `npm ci` also apply uBO 1.76.4's parser fix through
+`tools/patch-ubo-core.mjs`: a tag name must lead its compound selector, so
+`[data-ad]div` is rejected while `[data-ad] div` remains valid. The published
+`@gorhill/ubo-core` 0.1.30 predates this fix. The install patch checks the exact
+source shape and accepts an already-fixed copy; `verify` checks valid and
+invalid selectors. Retire the patch when the published engine includes the fix.
+
 ### Useful commands
 
 ```bash
-npm run verify              # 11 structural checks on the built extension
+npm run verify              # structural and behavior checks on the built extension
 npm run check:regex         # every regexFilter against real RE2
 npm run check:regexmem      # against Chromium's 2KB compiled-memory budget
 node tools/measure-split.mjs        # per-list rule cost
