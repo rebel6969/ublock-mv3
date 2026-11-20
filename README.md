@@ -10,7 +10,7 @@ and scriptlet implementations, so you keep as much of uBO's behaviour as MV3
 permits.
 
 Derived from [uBlock Origin](https://github.com/gorhill/uBlock) by Raymond Hill.
-Scriptlets and redirect resources are pinned to uBlock Origin 1.76.4.
+Scriptlets and redirect resources are pinned to uBlock Origin 1.76.6.
 GPL-3.0-or-later.
 
 ---
@@ -113,7 +113,7 @@ Honest accounting, as measured on that list snapshot.
 | 150 | `ipaddress=`: DNR cannot match on IP addresses |
 | 119 | Regex filters RE2 cannot compile |
 | 74 | `header=` |
-| 15 | Redirect filters naming a resource uBO 1.76.4 does not ship (e.g. `didomi-loader`), or `redirect=none` |
+| 15 | Redirect filters naming a resource uBO 1.76.6 does not ship (e.g. `didomi-loader`), or `redirect=none` |
 | 8 | Invalid filters |
 
 Where a list ships its own MV3 rewrite of such a filter, that rewrite is used.
@@ -188,12 +188,18 @@ exception has to be compiled in with the lists.
 Without a personal config the build uses `config/default.json`, which mirrors
 uBO's default list selection and contains no personal data.
 
-`npm install` and `npm ci` also apply uBO 1.76.4's parser fix through
-`tools/patch-ubo-core.mjs`: a tag name must lead its compound selector, so
-`[data-ad]div` is rejected while `[data-ad] div` remains valid. The published
-`@gorhill/ubo-core` 0.1.30 predates this fix. The install patch checks the exact
-source shape and accepts an already-fixed copy; `verify` checks valid and
-invalid selectors. Retire the patch when the published engine includes the fix.
+`npm install` and `npm ci` apply parser compatibility patches through
+`tools/patch-ubo-core.mjs`. The 1.76.4 selector guard rejects `[data-ad]div`
+while keeping `[data-ad] div` valid. The 1.76.6 adaptation accepts hostname/path
+targets for scriptlets, including exclusions. Packaged lists and My filters
+match these targets against the hostname and pathname, with paths treated as
+case-sensitive prefixes; regex targets can also include a path. Query strings
+and fragments do not participate in path matching.
+
+The published `@gorhill/ubo-core` 0.1.30 predates these changes. Each install
+patch checks the exact source shape and accepts an already-patched copy;
+`verify` checks selectors, path parsing, exclusions and both generated lookup
+forms. Retire the patches when the published engine includes the changes.
 
 ### Useful commands
 

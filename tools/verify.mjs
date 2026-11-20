@@ -18,6 +18,9 @@ import { loadPopupFilters, loadPublicSuffixList, matchPopup } from '../src/lib/p
 import { planStaticDeltas, planProblems } from '../src/lib/delta-plan.js';
 import { dnrRulesetFromRawLists } from '@gorhill/ubo-core/js/static-dnr-filtering.js';
 import { AstFilterParser } from '@gorhill/ubo-core/js/static-filtering-parser.js';
+import { buildTable, emitLookupFile } from './emit-scriptlets.mjs';
+import { userScriptCode } from '../src/lib/user-filters.js';
+import { compileScriptletTarget, matchesScriptletTarget } from '../src/lib/scriptlet-targets.js';
 
 const DELTA_RESERVE = BUDGET.DELTA_RESERVE;
 
@@ -186,6 +189,17 @@ function lateTrapsUnderPageMap(src) {
         const passed = __t.execCalls === 1;
         return { installed, blocked, passed };
     })()`);
+}
+
+function lookupCalls(source, hostname, pathname) {
+    const ctx = vm.createContext({});
+    vm.runInContext(`
+        globalThis.location = ${JSON.stringify({ hostname, pathname })};
+        globalThis.calls = [];
+        globalThis.__ubmv3_main = { apply(items) { calls.push(...items); } };
+    `, ctx);
+    vm.runInContext(source, ctx);
+    return JSON.parse(vm.runInContext('JSON.stringify(calls.map(c => c[0]).sort())', ctx));
 }
 
 async function main() {
@@ -675,6 +689,66 @@ async function main() {
             fail('delta planner keeps an update in force that no longer fits');
         } else {
             note(`static delta planner: whole-list updates, smallest first, quotas held; old half-applied plan flagged (${oldProblems.length} problems)`);
+        }
+    }
+
+    // --- uBO 1.76.6: scriptlet hostname/path targets -----------------------
+    {
+        const text = [
+            'example.com/path##+js(set-constant, pathMarker, 1)',
+            'example.com,~example.com/private##+js(set-constant, otherMarker, 1)',
+        ].join('\n');
+        const compiled = await dnrRulesetFromRawLists([ { name: 'path-fixture', text } ], DNR_OPTIONS);
+        const details = Array.from(compiled.scriptlet?.values() ?? []);
+        const pathAccepted = details.some(d => d.matches?.includes('example.com/path'));
+        const exclusionAccepted = details.some(d => d.excludeMatches?.includes('example.com/private'));
+        const exclusion = compileScriptletTarget('example.com/private');
+        const hosts = [ 'sub.example.com', 'example.com', 'com' ];
+        if ( pathAccepted === false || exclusionAccepted === false ) {
+            fail('scriptlet path parser: hostname/path or its exclusion was discarded');
+        } else if ( matchesScriptletTarget(exclusion, hosts, '/private/a') !== true ||
+                    matchesScriptletTarget(exclusion, hosts, '/public') !== false ) {
+            fail('scriptlet path exclusions do not distinguish matching and unrelated paths');
+        } else {
+            note('scriptlet path parser: literal paths and exclusions compile and match only their path');
+        }
+
+        const table = {
+            'example.com/path': [ [ 'literal' ] ],
+            'example.com/视频': [ [ 'unicode' ] ],
+            '/^regex\\.example\\/watch/': [ [ 'regex-path' ] ],
+            '/^regex\\.example$/': [ [ 'host-regex' ] ],
+            'example.com': [ [ 'hostname' ] ],
+            'example.*': [ [ 'entity' ] ],
+            '*': [ [ 'generic' ] ],
+            '/[/': [ [ 'invalid' ] ],
+        };
+        const cases = [
+            [ 'example.com', '/path/a', [ 'entity', 'generic', 'hostname', 'literal' ] ],
+            [ 'sub.example.com', '/path', [ 'entity', 'generic', 'hostname', 'literal' ] ],
+            [ 'example.com', '/else', [ 'entity', 'generic', 'hostname' ] ],
+            [ 'example.com', '/Path', [ 'entity', 'generic', 'hostname' ] ],
+            [ 'badexample.com', '/path', [ 'generic' ] ],
+            [ 'regex.example', '/watch/a', [ 'generic', 'host-regex', 'regex-path' ] ],
+            [ 'sub.regex.example', '/else', [ 'generic', 'host-regex' ] ],
+            [ 'example.com', '/视频', [ 'entity', 'generic', 'hostname', 'unicode' ] ],
+        ];
+        const sources = [ emitLookupFile('MAIN', buildTable(table)), userScriptCode('MAIN', table) ];
+        const wrong = [];
+        for ( const [ index, source ] of sources.entries() ) {
+            if ( Array.from(source).some(c => c.charCodeAt(0) > 255) ) {
+                wrong.push(`lookup ${index} emitted two-byte page code`);
+            }
+            for ( const [ host, path, expected ] of cases ) {
+                if ( JSON.stringify(lookupCalls(source, host, path)) !== JSON.stringify(expected) ) {
+                    wrong.push(`lookup ${index} failed ${host}${path}`);
+                }
+            }
+        }
+        if ( wrong.length !== 0 ) {
+            fail(`scriptlet path lookup: ${wrong.join('; ')}`);
+        } else {
+            note(`scriptlet path lookup: packaged and My filters pass ${cases.length} cases each, including regex paths and hostname boundaries`);
         }
     }
 

@@ -20,6 +20,7 @@ import { dnrRulesetFromRawLists } from '@gorhill/ubo-core/js/static-dnr-filterin
 import { ENV } from './env-runtime.js';
 import { EXTENSION_PATHS } from './redirect-paths.js';
 import { parseSpecific } from './cosmetic-parse.js';
+import { compileScriptletTarget, matchesScriptletTarget } from './scriptlet-targets.js';
 
 export const USER_COSMETIC_KEY = 'userCosmetic';
 export const USER_STATUS_KEY = 'userFiltersStatus';
@@ -146,9 +147,13 @@ export async function compileUserFilters(text, { trusted = false } = {}) {
 
 // In-page code for one world: resolve this page's calls and hand them to the
 // scriptlet bundle loaded just before it (same hostname rules as the packaged
-// lookup: ladder, "*", entity "name.*", regex "/.../").
-function userScriptCode(world, table) {
+// lookup: ladder, "*", entity "name.*", regex "/.../", hostname/path).
+export function userScriptCode(world, table) {
     const key = `__ubmv3_${world.toLowerCase()}`;
+    const advanced = Object.keys(table).flatMap(host => {
+        const target = compileScriptletTarget(host);
+        return target === null ? [] : [ [ target, host ] ];
+    });
     return `(() => {
 "use strict";
 const api = globalThis[${JSON.stringify(key)}];
@@ -166,11 +171,11 @@ for ( const h of ladder ) {
     let s = h;
     for ( let pos = s.lastIndexOf('.'); pos !== -1; pos = s.lastIndexOf('.') ) { s = s.slice(0, pos); add(s + '.*'); }
 }
-for ( const k of Object.keys(T) ) {
-    if ( k.length > 2 && k.startsWith('/') && k.endsWith('/') ) {
-        try { if ( new RegExp(k.slice(1, -1)).test(hn) ) { add(k); } } catch { }
-    }
-}
+${advanced.length !== 0 ? `const advanced = ${asciiJSON(advanced)};
+const matchesTarget = ${matchesScriptletTarget.toString()};
+for ( const [ target, host ] of advanced ) {
+    if ( matchesTarget(target, ladder, location.pathname) ) { add(host); }
+}` : ''}
 if ( calls.length !== 0 ) { api.apply(calls); }
 })();`;
 }
