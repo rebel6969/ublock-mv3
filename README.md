@@ -10,7 +10,7 @@ and scriptlet implementations, so you keep as much of uBO's behaviour as MV3
 permits.
 
 Derived from [uBlock Origin](https://github.com/gorhill/uBlock) by Raymond Hill.
-Scriptlets and redirect resources are pinned to uBlock Origin 1.77.0.
+Scriptlets and redirect resources are pinned to uBlock Origin 1.77.2.
 GPL-3.0-or-later.
 
 ---
@@ -113,7 +113,7 @@ Honest accounting, as measured on that list snapshot.
 | 150 | `ipaddress=`: DNR cannot match on IP addresses |
 | 119 | Regex filters RE2 cannot compile |
 | 74 | `header=` |
-| 15 | Redirect filters naming a resource uBO 1.77.0 does not ship (e.g. `didomi-loader`), or `redirect=none` |
+| 15 | Redirect filters naming a resource uBO 1.77.2 does not ship (e.g. `didomi-loader`), or `redirect=none` |
 | 8 | Invalid filters |
 
 Where a list ships its own MV3 rewrite of such a filter, that rewrite is used.
@@ -289,6 +289,9 @@ Each of these fails silently if broken, so each is checked mechanically:
     must leave the compiler's output byte-identical. It is checked against known
     answers from the shipped data: a listed host as a popup is closed, the same
     URL as an ordinary request is not, and an unlisted host is not.
+11. **Optimizely URL-change subscriptions** — resubscribing while another script
+    wraps history must preserve that wrapper, call the native methods once and
+    notify only active subscribers. The packaged stand-in is exercised in a VM.
 
 ---
 

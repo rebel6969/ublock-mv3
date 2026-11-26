@@ -191,6 +191,43 @@ function lateTrapsUnderPageMap(src) {
     })()`);
 }
 
+function optimizelyUnderHistoryWrapper(source) {
+    const ctx = vm.createContext({ URL });
+    vm.runInContext(`
+        globalThis.window = globalThis;
+        globalThis.document = { readyState: 'loading', currentScript: null, addEventListener() {} };
+        globalThis.location = { href: 'https://example.com/' };
+        let serial = 0;
+        globalThis.crypto = { getRandomValues(bytes) { bytes.fill(++serial); } };
+        globalThis.addEventListener = () => {};
+        globalThis.removeEventListener = () => {};
+        globalThis.state = { native: 0, external: 0, notifications: 0 };
+        globalThis.history = {
+            pushState(_state, _title, url) { state.native++; location.href = new URL(url, location.href).href; },
+            replaceState(_state, _title, url) { state.native++; location.href = new URL(url, location.href).href; },
+        };
+    `, ctx);
+    vm.runInContext(source, ctx);
+    vm.runInContext(`
+        const utils = optimizely.get('utils');
+        const unsubscribeFirst = utils.onUrlChange(() => { state.notifications++; });
+        const wrappedPush = history.pushState;
+        const wrappedReplace = history.replaceState;
+        history.pushState = function(...args) { state.external++; return wrappedPush.apply(this, args); };
+        history.replaceState = function(...args) { state.external++; return wrappedReplace.apply(this, args); };
+        unsubscribeFirst();
+        for ( let cycle = 0; cycle < 2; cycle++ ) {
+            const cancel = utils.onUrlChange(() => { state.notifications++; });
+            history.pushState({}, '', '/push-' + cycle);
+            history.replaceState({}, '', '/replace-' + cycle);
+            cancel();
+            history.pushState({}, '', '/idle-push-' + cycle);
+            history.replaceState({}, '', '/idle-replace-' + cycle);
+        }
+    `, ctx, { timeout: 1000 });
+    return JSON.parse(vm.runInContext('JSON.stringify(state)', ctx));
+}
+
 function lookupCalls(source, hostname, pathname) {
     const ctx = vm.createContext({});
     vm.runInContext(`
@@ -689,6 +726,22 @@ async function main() {
             fail('delta planner keeps an update in force that no longer fits');
         } else {
             note(`static delta planner: whole-list updates, smallest first, quotas held; old half-applied plan flagged (${oldProblems.length} problems)`);
+        }
+    }
+
+    // --- uBO 1.77.2: Optimizely history wrapper lifecycle -----------------
+    {
+        const source = readFileSync(resolve(DIST, 'web_accessible_resources', 'optimizely.js'), 'utf-8');
+        try {
+            const result = optimizelyUnderHistoryWrapper(source);
+            const expected = { native: 8, external: 8, notifications: 4 };
+            if ( JSON.stringify(result) !== JSON.stringify(expected) ) {
+                fail(`Optimizely URL-change lifecycle: ${JSON.stringify(result)}`);
+            } else {
+                note('Optimizely URL-change lifecycle: resubscription under another history wrapper has no recursion or duplicate notifications');
+            }
+        } catch (reason) {
+            fail(`Optimizely URL-change lifecycle: ${reason.message}`);
         }
     }
 
