@@ -1,6 +1,6 @@
 {
   "name": "ublock-mv3",
-  "version": "1.0.0",
+  "version": "1.0.36",
   "private": true,
   "type": "module",
   "description": "Manifest V3 content blocker for Chrome, built on uBlock Origin's static filtering engine compiled to declarativeNetRequest.",

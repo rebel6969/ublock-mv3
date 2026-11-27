@@ -10,11 +10,16 @@ import { ROOT, PARENT, readBackup, describeConfig } from './lib/backup.mjs';
 import { ENV } from './lib/env.mjs';
 import { SHARD_COUNT, shardOf } from './lib/shardcfg.mjs';
 import { redirectResources, REDIRECT_DIR, VENDOR_WAR } from './lib/redirects.mjs';
+import { releaseVersion } from './lib/version.mjs';
 
 const SRC = resolve(ROOT, 'src');
 const DIST = resolve(ROOT, 'extension');
 const BUILD = resolve(ROOT, 'build');
 const UBO = resolve(PARENT, 'uBlock0.chromium');
+const RELEASE_VERSION = releaseVersion(
+    JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf-8')).version,
+    process.env.EXT_VERSION
+);
 
 /* ---------------------------------------------------------------------- */
 /* Invariant 1: the runtime env must match the build env                   */
@@ -142,50 +147,13 @@ function copyRuntimeFiles() {
     return files;
 }
 
-// Version is <major>.<minor>.<build>, where build simply counts rebuilds.
-//
-// Chrome requires 1-4 dot-separated integers in 0-65535, so a date cannot be
-// embedded readably (20260916 overflows, and 1.26.916.2255 is unreadable). A
-// plain counter is what a version number is for: "am I on the latest build?"
-// is answered by comparing one small number. The date goes in version_name,
-// which is what Chrome actually displays.
-const PACKAGE_VERSION = '1.0'; // bump by hand for real releases
-
+// Rebuilding preserves the release version; only package.json advances it.
 function buildVersion(now = new Date()) {
     const p = v => String(v).padStart(2, '0');
     const stamp = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ` +
                   `${p(now.getHours())}:${p(now.getMinutes())}`;
 
-    // CI must set the version explicitly. The local counter lives in build/,
-    // which is not committed, so every CI run would otherwise restart at 1 --
-    // and Chrome only auto-updates when the version INCREASES, so a version that
-    // never moves silently breaks updates for everyone already installed.
-    const explicit = process.env.EXT_VERSION;
-    if ( explicit ) {
-        if ( /^\d+(\.\d+){0,3}$/.test(explicit) === false ) {
-            throw new Error(
-                `EXT_VERSION="${explicit}" is not a valid Chrome version ` +
-                `(1-4 dot-separated integers, each 0-65535)`
-            );
-        }
-        for ( const part of explicit.split('.') ) {
-            if ( Number(part) > 65535 ) {
-                throw new Error(`EXT_VERSION part "${part}" exceeds 65535`);
-            }
-        }
-        return { version: explicit, build: explicit.split('.').pop(), stamp };
-    }
-
-    const counterPath = resolve(BUILD, 'build-number.txt');
-    let n = 0;
-    if ( existsSync(counterPath) ) {
-        n = parseInt(readFileSync(counterPath, 'utf-8').trim(), 10) || 0;
-    }
-    n += 1;
-    mkdirSync(BUILD, { recursive: true });
-    writeFileSync(counterPath, String(n));
-
-    return { version: `${PACKAGE_VERSION}.${n}`, build: n, stamp };
+    return { version: RELEASE_VERSION, build: RELEASE_VERSION.split('.').pop(), stamp };
 }
 
 // An unpacked extension's id derives from its folder path, so a readable

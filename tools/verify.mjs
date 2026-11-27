@@ -21,6 +21,7 @@ import { AstFilterParser } from '@gorhill/ubo-core/js/static-filtering-parser.js
 import { buildTable, emitLookupFile } from './emit-scriptlets.mjs';
 import { userScriptCode } from '../src/lib/user-filters.js';
 import { compileScriptletTarget, matchesScriptletTarget } from '../src/lib/scriptlet-targets.js';
+import { releaseVersion } from './lib/version.mjs';
 
 const DELTA_RESERVE = BUDGET.DELTA_RESERVE;
 
@@ -265,6 +266,23 @@ async function main() {
         fail(`manifest_version must be 3, got ${manifest.manifest_version}`);
     }
     note(`manifest: ${manifest.name} ${manifest.version}, min Chrome ${manifest.minimum_chrome_version}`);
+
+    // Local output, CI artifacts and tags must use one declared release version.
+    {
+        const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf-8'));
+        const lock = JSON.parse(readFileSync(resolve(ROOT, 'package-lock.json'), 'utf-8'));
+        const expected = releaseVersion(pkg.version, process.env.EXT_VERSION);
+        let mismatchRefused = false;
+        try { releaseVersion(pkg.version, '0.0.1'); }
+        catch (reason) { mismatchRefused = reason.message.includes('does not match'); }
+        if ( manifest.version !== expected || lock.version !== expected ||
+             lock.packages[''].version !== expected || mismatchRefused === false ||
+             releaseVersion(pkg.version, pkg.version) !== expected ) {
+            fail('release version differs between package, lockfile or manifest, or accepts an override');
+        } else {
+            note(`release version: package, lockfile and manifest agree on ${expected}; mismatched overrides refused`);
+        }
+    }
 
     // Every file the manifest names must exist.
     const referenced = [];

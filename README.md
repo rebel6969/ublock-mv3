@@ -10,7 +10,7 @@ and scriptlet implementations, so you keep as much of uBO's behaviour as MV3
 permits.
 
 Derived from [uBlock Origin](https://github.com/gorhill/uBlock) by Raymond Hill.
-Scriptlets and redirect resources are pinned to uBlock Origin 1.77.2.
+Scriptlets and redirect resources are pinned to uBlock Origin 1.77.4.
 GPL-3.0-or-later.
 
 ---
@@ -113,7 +113,7 @@ Honest accounting, as measured on that list snapshot.
 | 150 | `ipaddress=`: DNR cannot match on IP addresses |
 | 119 | Regex filters RE2 cannot compile |
 | 74 | `header=` |
-| 15 | Redirect filters naming a resource uBO 1.77.2 does not ship (e.g. `didomi-loader`), or `redirect=none` |
+| 15 | Redirect filters naming a resource uBO 1.77.4 does not ship (e.g. `didomi-loader`), or `redirect=none` |
 | 8 | Invalid filters |
 
 Where a list ships its own MV3 rewrite of such a filter, that rewrite is used.
@@ -202,6 +202,12 @@ patch checks the exact source shape and accepts an already-patched copy;
 forms. Retire the patches when the published engine includes the changes.
 
 ### Useful commands
+
+The extension version comes from `package.json` for local builds, CI artifacts
+and releases. Rebuilding does not increment it. Advance it with
+`npm version <next-version> --no-git-tag-version`, which also updates the lockfile,
+then release the matching `v<version>` tag. A different `EXT_VERSION` or release
+tag is rejected, so the installed folder and GitHub package stay in sync.
 
 ```bash
 npm run verify              # structural and behavior checks on the built extension

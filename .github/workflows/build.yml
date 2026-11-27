@@ -47,22 +47,18 @@ jobs:
         run: npm run vendor
 
       - name: Determine version
-        # Chrome only auto-updates when the version increases, so it must be
-        # monotonic across CI runs. A release uses its tag; any other build uses
-        # the run number, which never repeats for this repository.
+        # Local builds, push artifacts and release packages use package.json.
+        # Reject release tags that would give the package a different version.
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            V="${{ github.event.release.tag_name }}"
-            V="${V#v}"
-            case "$V" in
-              *.*.*) : ;;
-              *)  V="$V.0" ;;
-            esac
-          else
-            V="1.0.${{ github.run_number }}"
+          RELEASE_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_EVENT_NAME" = release ] && [ "$RELEASE_TAG" != "v$RELEASE_VERSION" ]; then
+            echo "Release tag does not match package.json version" >&2
+            exit 1
           fi
-          echo "EXT_VERSION=$V" >> "$GITHUB_ENV"
-          echo "building version $V"
+          echo "EXT_VERSION=$RELEASE_VERSION" >> "$GITHUB_ENV"
+          echo "building version $RELEASE_VERSION"
 
       - name: Build
         run: npm run build:all
